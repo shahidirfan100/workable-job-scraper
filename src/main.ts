@@ -107,10 +107,10 @@ const crawler = new PlaywrightCrawler({
                 await jobPage.goto(job.url, { waitUntil: 'networkidle', timeout: 60000 });
                 
                 // Wait for the job description to load
-                await jobPage.waitForSelector('div[class*="job-content"]', { timeout: 30000 });
+                await jobPage.waitForSelector('div[class*="job-description"]', { timeout: 60000 });
                 
                 // Extract job description - try different possible selectors
-                const jobDescription = await jobPage.$eval('div[class*="job-content"]', el => el.textContent?.trim()) 
+                const jobDescription = await jobPage.$eval('div[class*="job-description"]', el => el.textContent?.trim()) 
                     || await jobPage.$eval('div.job__description', el => el.textContent?.trim())
                     || await jobPage.$eval('.job-description', el => el.textContent?.trim())
                     || await jobPage.$eval('main', el => el.textContent?.trim()?.substring(0, 2000)) // fallback to main content
