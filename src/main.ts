@@ -61,13 +61,17 @@ const crawler = new PlaywrightCrawler({
             for (const jobArticle of jobArticles) {
                 // Extract job title
                 const titleElement = jobArticle.querySelector('h2 a') as HTMLAnchorElement;
+                const title = titleElement?.textContent?.trim() || '';
                 const url = titleElement?.href || '';
                 
                 // Construct full URL if relative
                 const fullUrl = url.startsWith('http') ? url : `https://jobs.workable.com${url}`;
                 
-                if (fullUrl) { // Only add if we have a URL
-                    jobs.push({ url: fullUrl });
+                if (title && fullUrl) { // Only add if we have a title and URL
+                    jobs.push({
+                        title,
+                        url: fullUrl,
+                    });
                 }
             }
             
@@ -90,15 +94,8 @@ const crawler = new PlaywrightCrawler({
                 // Wait for the job description to load
                 await jobPage.waitForSelector('div[class*="job-description"]', { timeout: 60000 });
 
-                const jobTitle = await jobPage.$eval('h1', el => el.textContent?.trim()) || 'Title not found';
-
-                const company = await jobPage.$eval('a[data-ui="company-name"]', el => el.textContent?.trim()) 
-                    || await jobPage.$eval('[class*="companyName"] a', el => el.textContent?.trim()) 
-                    || 'Company not found';
-
-                const location = await jobPage.$eval('[data-ui="job-location"]', el => el.textContent?.trim()) 
-                    || await jobPage.$eval('[class*="jobDetails"] [class*="location"]', el => el.textContent?.trim()) 
-                    || 'Location not found';
+                const company = await jobPage.$eval('a[data-ui="company-name"] span', el => el.textContent?.trim()) || 'Company not found';
+                const location = await jobPage.$eval('dd[data-ui="job-location"] span', el => el.textContent?.trim()) || 'Location not found';
                 
                 // Extract job description - try different possible selectors
                 const jobDescriptionHTML = await jobPage.$eval('div[class*="job-description"]', el => el.innerHTML) 
@@ -115,16 +112,16 @@ const crawler = new PlaywrightCrawler({
 
                 // Push complete job data to dataset
                 await Dataset.pushData({
-                    jobTitle,
-                    company,
-                    location,
-                    jobDescriptionHTML,
-                    jobDescriptionText,
+                    jobTitle: job.title,
+                    company: company,
+                    location: location,
+                    jobDescriptionHTML: jobDescriptionHTML,
+                    jobDescriptionText: jobDescriptionText,
                     jobLink: job.url
                 });
 
                 collectedJobs++;
-                log.info(`Collected job #${collectedJobs}: ${jobTitle}`);
+                log.info(`Collected job #${collectedJobs}: ${job.title}`);
 
                 if (collectedJobs >= maxJobs) {
                     log.info(`Reached the requested number of jobs (${maxJobs}). Stopping.`);
