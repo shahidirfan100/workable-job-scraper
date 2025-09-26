@@ -9,10 +9,11 @@
     "prepare": "npm run build"
   },
   "dependencies": {
-    "crawlee": "^5.12.0"
+    "apify": "^3.4.5",
+    "crawlee": "^3.15.0"
   },
   "devDependencies": {
-    "typescript": "^4.9.5",
+    "typescript": "^5.4.0",
     "@types/node": "^18.16.18"
   }
 }
