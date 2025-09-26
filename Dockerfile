@@ -10,6 +10,9 @@ COPY package*.json ./
 # Install production dependencies first
 RUN npm install --production
 
+# Install Playwright browsers for the specific version
+RUN npx playwright install chromium
+
 # Copy the rest of the source code to the container
 COPY . ./
 
