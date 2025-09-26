@@ -17,7 +17,8 @@ let searchUrl = `https://jobs.workable.com/search?q=${encodeURIComponent(input.k
 
 // Add location if provided
 if (input.location) {
-    searchUrl += `&location=${encodeURIComponent(input.location)}`;
+    // Workable uses 'l' parameter for location
+    searchUrl += `&l=${encodeURIComponent(input.location)}`;
 }
 
 // Add posted date filter if provided

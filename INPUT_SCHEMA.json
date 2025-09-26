@@ -6,8 +6,7 @@
     "keyword": {
       "title": "Keyword",
       "type": "string",
-      "description": "Job title or keyword to search for.",
-      "required": true
+      "description": "Job title or keyword to search for."
     },
     "location": {
       "title": "Location",
@@ -31,7 +30,6 @@
       "type": "integer",
       "default": 50,
       "minimum": 1,
-      "required": true,
       "description": "Number of job listings to fetch."
     }
   },
