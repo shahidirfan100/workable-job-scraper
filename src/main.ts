@@ -85,27 +85,47 @@ router.addHandler('DETAIL', async ({ request, page, log }) => {
             log.warning(`Could not find company name on ${request.url}`);
         }
 
-        const details = await page.$$eval('[class*="jobDetails__job-detail"]', (els) => els.map(el => el.textContent?.trim()));
-        
-        let location = 'Location not found';
-        if (details.length > 0) {
-            location = details[0] || 'Location not found';
-        }
+        const jobDetails = await page.evaluate(() => {
+            const details = {
+                location: 'Location not found',
+                jobType: 'Job type not found',
+                workplaceType: 'Workplace type not found'
+            };
+            const detailElements = document.querySelectorAll('[data-ui="job-detail"]');
+            for (const el of detailElements) {
+                const text = el.textContent?.trim();
+                if (!text) continue;
 
-        let jobType = 'Job type not found';
-        if (details.length > 1) {
-            jobType = details[1] || 'Job type not found';
-        }
+                if (text.toLowerCase().includes('full-time') || text.toLowerCase().includes('part-time') || text.toLowerCase().includes('contract')) {
+                    details.jobType = text;
+                } else if (text.toLowerCase().includes('on-site') || text.toLowerCase().includes('hybrid') || text.toLowerCase().includes('remote')) {
+                    details.workplaceType = text;
+                } else if (text.includes(',')) { // Heuristic for location
+                    details.location = text;
+                }
+            }
+            return details;
+        });
 
         let jobPostedDate = 'Job posted date not found';
         try {
-            jobPostedDate = await page.evaluate(() => {
-                const elements = Array.from(document.querySelectorAll('span, div, p'));
-                const postedElement = elements.find(el => el.textContent?.includes('Posted'));
-                return postedElement?.textContent?.trim() || 'Job posted date not found';
-            });
+            jobPostedDate = await page.$eval('time', el => el.textContent?.trim()) || 'Job posted date not found';
         } catch (e) {
-            log.warning(`Could not find job posted date on ${request.url}`);
+            try {
+                jobPostedDate = await page.evaluate(() => {
+                    const elements = Array.from(document.querySelectorAll('p, span, div'));
+                    for (const el of elements) {
+                        if (el.textContent?.toLowerCase().includes('posted')) {
+                            if (el.childElementCount < 2 && el.textContent.length < 100) {
+                                return el.textContent.trim();
+                            }
+                        }
+                    }
+                    return 'Job posted date not found';
+                });
+            } catch (e2) {
+                log.warning(`Could not find job posted date on ${request.url}`);
+            }
         }
 
         let jobDescriptionHTML = '';
@@ -133,8 +153,9 @@ router.addHandler('DETAIL', async ({ request, page, log }) => {
         await Dataset.pushData({
             jobTitle: title,
             company,
-            location,
-            jobType,
+            location: jobDetails.location,
+            jobType: jobDetails.jobType,
+            workplaceType: jobDetails.workplaceType,
             jobPostedDate,
             jobDescriptionHTML,
             jobDescriptionText,
