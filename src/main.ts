@@ -64,15 +64,13 @@ const crawler = new PlaywrightCrawler({
                 const title = titleElement?.textContent?.trim() || '';
                 const url = titleElement?.href || '';
                 
-                // Extract company
-                const companyElement = jobArticle.querySelector('span[class*="company"]');
-                const company = companyElement?.textContent?.trim() || 'Company not found';
+                // Extract company, location, and job type from the same container
+                const detailsContainer = jobArticle.querySelector('div:has(> span[class*="company"])');
+                const company = detailsContainer?.querySelector('span:nth-child(1)')?.textContent?.trim() || 'Company not found';
+                const location = detailsContainer?.querySelector('span:nth-child(2)')?.textContent?.trim() || 'Location not found';
+                const jobType = detailsContainer?.querySelector('span:nth-child(3)')?.textContent?.trim() || 'Not specified';
                 
-                // Extract location
-                const locationElement = jobArticle.querySelector('span[class*="location"]');
-                const location = locationElement?.textContent?.trim() || 'Location not found';
-                
-                // Extract posted date
+                // Extract posted date - this selector seems to work
                 const dateElement = jobArticle.querySelector('span[class*="date"]');
                 const datePosted = dateElement?.textContent?.trim() || 'Date not found';
                 
@@ -85,6 +83,7 @@ const crawler = new PlaywrightCrawler({
                         url: fullUrl,
                         company,
                         location,
+                        jobType,
                         datePosted
                     });
                 }
@@ -107,13 +106,10 @@ const crawler = new PlaywrightCrawler({
                 await jobPage.goto(job.url, { waitUntil: 'networkidle', timeout: 60000 });
                 
                 // Wait for the job description to load
-                await jobPage.waitForSelector('div[class*="job-description"]', { timeout: 60000 });
+                await jobPage.waitForSelector('div[class*="job-description"] > div', { timeout: 60000 });
                 
-                // Extract job description - try different possible selectors
-                const jobDescription = await jobPage.$eval('div[class*="job-description"]', el => el.textContent?.trim()) 
-                    || await jobPage.$eval('div.job__description', el => el.textContent?.trim())
-                    || await jobPage.$eval('.job-description', el => el.textContent?.trim())
-                    || await jobPage.$eval('main', el => el.textContent?.trim()?.substring(0, 2000)) // fallback to main content
+                // Extract job description as HTML
+                const jobDescription = await jobPage.$eval('div[class*="job-description"] > div', el => el.innerHTML.trim())
                     || 'Description not found';
 
                 // Push complete job data to dataset
@@ -121,6 +117,7 @@ const crawler = new PlaywrightCrawler({
                     jobTitle: job.title,
                     company: job.company,
                     location: job.location,
+                    jobType: job.jobType,
                     jobDescription: jobDescription,
                     postedDate: job.datePosted,
                     jobLink: job.url
