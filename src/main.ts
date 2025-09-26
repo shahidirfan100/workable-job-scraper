@@ -65,11 +65,11 @@ const crawler = new PlaywrightCrawler({
                 const url = titleElement?.href || '';
                 
                 // Extract company
-                const companyElement = jobArticle.querySelector('span[class*="company"]');
+                const companyElement = jobArticle.querySelector('span[data-ui="company"]');
                 const company = companyElement?.textContent?.trim() || 'Company not found';
                 
                 // Extract location
-                const locationElement = jobArticle.querySelector('span[class*="location"]');
+                const locationElement = jobArticle.querySelector('span[data-ui="location"]');
                 const location = locationElement?.textContent?.trim() || 'Location not found';
                 
                 // Extract posted date
@@ -110,10 +110,10 @@ const crawler = new PlaywrightCrawler({
                 await jobPage.waitForSelector('div[class*="job-description"]', { timeout: 60000 });
                 
                 // Extract job description - try different possible selectors
-                const jobDescription = await jobPage.$eval('div[class*="job-description"]', el => el.textContent?.trim()) 
-                    || await jobPage.$eval('div.job__description', el => el.textContent?.trim())
-                    || await jobPage.$eval('.job-description', el => el.textContent?.trim())
-                    || await jobPage.$eval('main', el => el.textContent?.trim()?.substring(0, 2000)) // fallback to main content
+                const jobDescription = await jobPage.$eval('div[class*="job-description"]', el => el.innerHTML) 
+                    || await jobPage.$eval('div.job__description', el => el.innerHTML)
+                    || await jobPage.$eval('.job-description', el => el.innerHTML)
+                    || await jobPage.$eval('main', el => el.innerHTML?.substring(0, 2000)) // fallback to main content
                     || 'Description not found';
 
                 // Push complete job data to dataset
