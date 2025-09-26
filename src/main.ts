@@ -78,14 +78,20 @@ router.addHandler('DETAIL', async ({ request, page, log }) => {
     try {
         await page.waitForSelector('h1', { timeout: 60000 });
 
+        try {
+            log.info('Attempting to accept cookie banner...');
+            await page.click('#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll', { timeout: 5000 });
+            log.info('Successfully accepted cookie banner.');
+        } catch (e) {
+            log.info('Cookie banner not found or could not be clicked, continuing...');
+        }
+
         let company = 'Company not found';
         try {
             company = await page.$eval('a[class*="companyName__link"]', el => el.textContent?.trim()) || 'Company not found';
         } catch (e) {
             log.warning(`Could not find company name on ${request.url}`);
         }
-
-        await page.waitForSelector('ul[data-ui="job-details"]', { timeout: 10000 });
         const jobDetails = await page.evaluate(() => {
             const details = {
                 location: 'Location not found',
@@ -199,7 +205,10 @@ router.addHandler('DETAIL', async ({ request, page, log }) => {
     }
 });
 
+const proxyConfiguration = await Actor.createProxyConfiguration();
+
 const crawler = new PlaywrightCrawler({
+    proxyConfiguration,
     launchContext: {
         launchOptions: {
             headless: true,
