@@ -35,7 +35,7 @@ const router = createPlaywrightRouter();
 router.addHandler('LIST', async ({ page, log, crawler }) => {
     log.info(`Processing list page: ${page.url()}`);
     
-    const jobCardSelector = 'li.whr-item';
+    const jobCardSelector = 'li[data-ui="job-card"]';
     try {
         log.info(`Waiting for job cards to appear using selector: ${jobCardSelector}`);
         await page.waitForSelector(jobCardSelector, { timeout: 45000 });
@@ -51,7 +51,7 @@ router.addHandler('LIST', async ({ page, log, crawler }) => {
         const jobCards = document.querySelectorAll(selector);
         const jobs = [];
         for (const card of jobCards) {
-            const linkElement = card.querySelector('h3.whr-title a') as HTMLAnchorElement;
+            const linkElement = card.querySelector('h3[data-ui="job-title"] a') as HTMLAnchorElement;
             if (linkElement) {
                 const title = linkElement.textContent?.trim() || '';
                 const url = linkElement.href || '';
@@ -73,7 +73,7 @@ router.addHandler('LIST', async ({ page, log, crawler }) => {
     }
 
     if (collectedJobs < maxJobs) {
-        const nextPageLink = await page.$eval('button[aria-label="Next page"]', el => el.closest('a')?.href).catch(() => null);
+        const nextPageLink = await page.$eval('a[data-ui="next-page"]', (el) => (el as HTMLAnchorElement).href).catch(() => null);
         if (nextPageLink) {
             log.info(`Found next page, adding to queue: ${nextPageLink}`);
             await crawler.addRequests([{ url: nextPageLink, label: 'LIST' }]);
@@ -106,17 +106,17 @@ router.addHandler('DETAIL', async ({ request, page, log }) => {
         });
 
         const jobPostedDate = await page.evaluate(() => {
-            const el = document.querySelector('time, .whr-date');
+            const el = document.querySelector('time[data-ui="job-posted-at"]');
             return el?.textContent?.trim() || 'Job posted date not found';
         });
 
         const jobDescriptionHTML = await page.evaluate(() => {
-            const el = document.querySelector('.job-description, div#description');
+            const el = document.querySelector('[data-ui="job-description"]');
             return el?.innerHTML || '';
         });
         
         const jobDescriptionText = await page.evaluate(() => {
-            const el = document.querySelector('.job-description, div#description');
+            const el = document.querySelector('[data-ui="job-description"]');
             return el?.textContent?.trim() || 'Description not found';
         });
 
