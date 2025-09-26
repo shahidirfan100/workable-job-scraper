@@ -95,7 +95,7 @@ router.addHandler('LIST', async ({ page, log, crawler }) => {
         if (nextPageLink) {
             const absoluteNextPageLink = nextPageLink.startsWith('http') ? nextPageLink : `https://jobs.workable.com${nextPageLink}`;
             log.info(`Found next page, adding to queue: ${absoluteNextPageLink}`);
-            await crawler.addRequests([{ url: absoluteNextNextPageLink, label: 'LIST' }]);
+            await crawler.addRequests([{ url: absoluteNextPageLink, label: 'LIST' }]);
         } else {
             log.info(`No more pages to process.`);
         }
