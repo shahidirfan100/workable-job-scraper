@@ -5,8 +5,7 @@
   "scripts": {
     "start": "node dist/main.js",
     "build": "tsc",
-    "test": "npm run build && npm start",
-    "prepare": "npm run build"
+    "test": "npm run build && npm start"
   },
   "dependencies": {
     "apify": "^3.4.5",
