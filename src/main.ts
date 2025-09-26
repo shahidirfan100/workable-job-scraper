@@ -48,32 +48,32 @@ const crawler = new PlaywrightCrawler({
         log.info(`Processing: ${request.url}`);
         
         // Wait for job listings container to load
-        await page.waitForSelector('div[data-cy="jobs-list"]', { timeout: 60000 });
+        await page.waitForSelector('ul[class*="jobs"]', { timeout: 60000 });
         
         // Wait a bit more for job cards to fully load
         await page.waitForTimeout(3000);
         
         // Extract job listings from the current page
         const jobsOnPage = await page.evaluate(() => {
-            const jobArticles = document.querySelectorAll('article.job-card[data-cy="job-card"]');
+            const jobArticles = document.querySelectorAll('li[class*="job"]');
             const jobs = [];
 
             for (const jobArticle of jobArticles) {
                 // Extract job title
-                const titleElement = jobArticle.querySelector('a[data-cy="job-title-link"]') as HTMLAnchorElement;
+                const titleElement = jobArticle.querySelector('h2 a') as HTMLAnchorElement;
                 const title = titleElement?.textContent?.trim() || '';
-                const url = titleElement?.href || jobArticle.querySelector('h2 a')?.getAttribute('href') || '';
+                const url = titleElement?.href || '';
                 
                 // Extract company
-                const companyElement = jobArticle.querySelector('[data-cy="job-company"]');
+                const companyElement = jobArticle.querySelector('span[class*="company"]');
                 const company = companyElement?.textContent?.trim() || 'Company not found';
                 
                 // Extract location
-                const locationElement = jobArticle.querySelector('[data-cy="job-location"]');
+                const locationElement = jobArticle.querySelector('span[class*="location"]');
                 const location = locationElement?.textContent?.trim() || 'Location not found';
                 
                 // Extract posted date
-                const dateElement = jobArticle.querySelector('[data-cy="job-date"]');
+                const dateElement = jobArticle.querySelector('span[class*="date"]');
                 const datePosted = dateElement?.textContent?.trim() || 'Date not found';
                 
                 // Construct full URL if relative
@@ -107,13 +107,12 @@ const crawler = new PlaywrightCrawler({
                 await jobPage.goto(job.url, { waitUntil: 'networkidle', timeout: 60000 });
                 
                 // Wait for the job description to load
-                await jobPage.waitForSelector('[data-cy="job-content"]', { timeout: 30000 });
+                await jobPage.waitForSelector('div[class*="job-content"]', { timeout: 30000 });
                 
                 // Extract job description - try different possible selectors
-                const jobDescription = await jobPage.$eval('[data-cy="job-content"]', el => el.textContent?.trim()) 
+                const jobDescription = await jobPage.$eval('div[class*="job-content"]', el => el.textContent?.trim()) 
                     || await jobPage.$eval('div.job__description', el => el.textContent?.trim())
                     || await jobPage.$eval('.job-description', el => el.textContent?.trim())
-                    || await jobPage.$eval('[data-cy="job-description"]', el => el.textContent?.trim())
                     || await jobPage.$eval('main', el => el.textContent?.trim()?.substring(0, 2000)) // fallback to main content
                     || 'Description not found';
 
@@ -149,7 +148,7 @@ const crawler = new PlaywrightCrawler({
             await page.waitForTimeout(2000); // Wait before looking for next page
             
             // Look for next page link and add it to the crawler if needed
-            const nextPageLink = await page.$eval('div[data-cy="pagination"] a[rel="next"]', el => (el as HTMLAnchorElement).href).catch(() => null);
+            const nextPageLink = await page.$eval('a[class*="next-page"]', el => (el as HTMLAnchorElement).href).catch(() => null);
             
             if (nextPageLink && collectedJobs < maxJobs) {
                 // Make sure the next page URL is absolute
