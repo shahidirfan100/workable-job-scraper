@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Input schema for Workable job scraper",
+  "type": "object",
+  "properties": {
+    "keyword": {
+      "type": "string",
+      "title": "Keyword",
+      "description": "Job title or keywords to search for",
+      "minLength": 1
+    },
+    "location": {
+      "type": "string",
+      "title": "Location",
+      "description": "City, state or country (optional)"
+    },
+    "postedDate": {
+      "type": "string",
+      "title": "Posted date filter",
+      "enum": [
+        "24h",
+        "7d",
+        "30d",
+        "anytime"
+      ],
+      "default": "anytime"
+    },
+    "resultsWanted": {
+      "type": "integer",
+      "title": "Number of jobs to fetch",
+      "minimum": 1,
+      "maximum": 1000,
+      "default": 100
+    }
+  },
+  "required": [
+    "keyword",
+    "resultsWanted"
+  ],
+  "additionalProperties": false
+}

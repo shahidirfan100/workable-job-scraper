@@ -1,0 +1,8 @@
+{
+  "name": "workable-job-scraper",
+  "version": "0.1.0",
+  "buildTag": "latest",
+  "description": "Workable job search scraper using Crawlee + Playwright + Chrome (TypeScript). Clicks into each job to extract DescriptionHTML and DescriptionText.",
+  "memory": 1024,
+  "timeout": 3600
+}
