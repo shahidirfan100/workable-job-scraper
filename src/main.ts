@@ -80,16 +80,32 @@ router.addHandler('DETAIL', async ({ request, page, log }) => {
 
         let company = 'Company not found';
         try {
-            company = await page.$eval('[data-ui="company-name"]', el => el.textContent?.trim()) || 'Company not found';
+            company = await page.$eval('a[class*="companyName__link"]', el => el.textContent?.trim()) || 'Company not found';
         } catch (e) {
             log.warning(`Could not find company name on ${request.url}`);
         }
 
+        const details = await page.$$eval('[class*="jobDetails__job-detail"]', (els) => els.map(el => el.textContent?.trim()));
+        
         let location = 'Location not found';
+        if (details.length > 0) {
+            location = details[0] || 'Location not found';
+        }
+
+        let jobType = 'Job type not found';
+        if (details.length > 1) {
+            jobType = details[1] || 'Job type not found';
+        }
+
+        let jobPostedDate = 'Job posted date not found';
         try {
-            location = await page.$eval('[data-ui="job-location"]', el => el.textContent?.trim()) || 'Location not found';
+            jobPostedDate = await page.evaluate(() => {
+                const elements = Array.from(document.querySelectorAll('span, div, p'));
+                const postedElement = elements.find(el => el.textContent?.includes('Posted'));
+                return postedElement?.textContent?.trim() || 'Job posted date not found';
+            });
         } catch (e) {
-            log.warning(`Could not find location on ${request.url}`);
+            log.warning(`Could not find job posted date on ${request.url}`);
         }
 
         let jobDescriptionHTML = '';
@@ -118,6 +134,8 @@ router.addHandler('DETAIL', async ({ request, page, log }) => {
             jobTitle: title,
             company,
             location,
+            jobType,
+            jobPostedDate,
             jobDescriptionHTML,
             jobDescriptionText,
             jobLink: request.url,
