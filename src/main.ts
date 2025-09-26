@@ -85,6 +85,7 @@ router.addHandler('DETAIL', async ({ request, page, log }) => {
             log.warning(`Could not find company name on ${request.url}`);
         }
 
+        await page.waitForSelector('ul[data-ui="job-details"]', { timeout: 10000 });
         const jobDetails = await page.evaluate(() => {
             const details = {
                 location: 'Location not found',
@@ -92,7 +93,7 @@ router.addHandler('DETAIL', async ({ request, page, log }) => {
                 workplaceType: 'Workplace type not found',
             };
 
-            const detailElements = document.querySelectorAll('[data-ui="job-detail"]');
+            const detailElements = document.querySelectorAll('li[data-ui="job-detail"]');
 
             for (const el of detailElements) {
                 const text = el.textContent?.trim();
@@ -117,13 +118,21 @@ router.addHandler('DETAIL', async ({ request, page, log }) => {
                 }
             }
 
-            // Fallback logic: if one of the details is still not found,
-            // try to identify it from the remaining elements.
+            // Fallback logic
             const foundValues = new Set(Object.values(details));
             const remainingElements = Array.from(detailElements).filter(el => !foundValues.has(el.textContent?.trim() || ''));
 
             if (details.location === 'Location not found' && remainingElements.length > 0) {
-                // Often, the location is the one left over.
+                for (const remEl of remainingElements) {
+                    const remText = remEl.textContent?.trim();
+                    if (remText && !/(full-time|part-time|contract|on-site|hybrid|remote)/i.test(remText)) {
+                        details.location = remText;
+                        break;
+                    }
+                }
+            }
+            
+            if (details.location === 'Location not found' && remainingElements.length === 1) {
                 details.location = remainingElements[0].textContent?.trim() || 'Location not found';
             }
 
