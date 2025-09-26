@@ -35,6 +35,17 @@ const router = createPlaywrightRouter();
 router.addHandler('LIST', async ({ page, log, crawler }) => {
     log.info(`Processing list page: ${page.url()}`);
     
+    // Handle the cookie consent banner first.
+    try {
+        log.info('Waiting for and clicking cookie consent button...');
+        const cookieButtonSelector = 'button:has-text("Accept all cookies")';
+        // Wait for the button to appear and click it.
+        await page.locator(cookieButtonSelector).click({ timeout: 15000 });
+        log.info('Successfully clicked the cookie consent button.');
+    } catch (e) {
+        log.info('Cookie consent button not found or already handled, continuing...');
+    }
+
     const jobCardSelector = 'li[data-ui="job-card"]';
     try {
         log.info(`Waiting for job cards to appear using selector: ${jobCardSelector}`);
