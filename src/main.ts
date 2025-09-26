@@ -96,12 +96,28 @@ router.addHandler('DETAIL', async ({ request, page, log }) => {
                 const text = el.textContent?.trim();
                 if (!text) continue;
 
-                if (text.toLowerCase().includes('full-time') || text.toLowerCase().includes('part-time') || text.toLowerCase().includes('contract')) {
-                    details.jobType = text;
-                } else if (text.toLowerCase().includes('on-site') || text.toLowerCase().includes('hybrid') || text.toLowerCase().includes('remote')) {
-                    details.workplaceType = text;
-                } else if (text.includes(',')) { // Heuristic for location
-                    details.location = text;
+                const svg = el.querySelector('svg');
+                let label = null;
+                if (svg) {
+                    label = svg.getAttribute('aria-label');
+                }
+
+                if (label) {
+                    if (label.toLowerCase().includes('location')) {
+                        details.location = text;
+                    } else if (label.toLowerCase().includes('job type') || label.toLowerCase().includes('employment type')) {
+                        details.jobType = text;
+                    } else if (label.toLowerCase().includes('workplace')) {
+                        details.workplaceType = text;
+                    }
+                } else { // Fallback to text content if no aria-label
+                    if ((details.jobType === 'Job type not found') && (text.toLowerCase().includes('full-time') || text.toLowerCase().includes('part-time') || text.toLowerCase().includes('contract'))) {
+                        details.jobType = text;
+                    } else if ((details.workplaceType === 'Workplace type not found') && (text.toLowerCase().includes('on-site') || text.toLowerCase().includes('hybrid') || text.toLowerCase().includes('remote'))) {
+                        details.workplaceType = text;
+                    } else if ((details.location === 'Location not found') && (text.includes(','))) {
+                        details.location = text;
+                    }
                 }
             }
             return details;
