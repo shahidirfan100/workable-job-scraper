@@ -33,11 +33,35 @@ const router = createPlaywrightRouter();
 
 router.addHandler('LIST', async ({ page, log, crawler }) => {
     log.info(`Processing list page: ${page.url()}`);
-    await page.waitForSelector('ul[class*="jobs"]', { timeout: 60000 });
-    await page.waitForTimeout(3000);
 
-    const jobsOnPage = await page.evaluate(() => {
-        const jobArticles = document.querySelectorAll('li[data-ui="job"]');
+    // Try to accept cookies first, as it might overlay the content.
+    try {
+        log.info('Attempting to accept cookie banner on list page...');
+        await page.waitForSelector('#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll', { timeout: 5000 });
+        await page.click('#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll');
+        log.info('Successfully accepted cookie banner on list page.');
+        await page.waitForTimeout(1000); // Wait a bit for the banner to disappear.
+    } catch (e) {
+        log.info('Cookie banner not found or could not be clicked on list page, continuing...');
+    }
+
+    const jobItemSelector = 'li[data-ui="job"]';
+    try {
+        log.info(`Waiting for job listings to appear using selector: ${jobItemSelector}`);
+        await page.waitForSelector(jobItemSelector, { timeout: 30000 });
+        log.info('Job listings found. Waiting for a bit more time for everything to settle.');
+        await page.waitForTimeout(5000); // Extra wait for safety
+    } catch (error) {
+        log.warning(`Could not find job listings on page: ${page.url()}. This might be the last page or there are no results.`);
+        const noResults = await page.content().then(html => html.includes('No results found') || html.includes('no jobs found'));
+        if (noResults) {
+            log.info('"No results found" message detected.');
+        }
+        return;
+    }
+
+    const jobsOnPage = await page.evaluate((selector) => {
+        const jobArticles = document.querySelectorAll(selector);
         const jobs = [];
         for (const jobArticle of jobArticles) {
             const titleElement = jobArticle.querySelector('h2[data-ui="job-title"] a') as HTMLAnchorElement;
@@ -51,25 +75,29 @@ router.addHandler('LIST', async ({ page, log, crawler }) => {
                 workplaceType: 'Workplace type not found',
             };
 
-            const detailElements = jobArticle.querySelectorAll('div > span');
-            const detailTexts = Array.from(detailElements).map(el => el.textContent?.trim() || '');
+            // The details are in a div that is a sibling of the h2's parent div.
+            const detailContainer = titleElement.closest('div[class*="job-card_jobCard__header__"]')?.nextElementSibling;
+            if (detailContainer) {
+                const detailElements = detailContainer.querySelectorAll('span');
+                const detailTexts = Array.from(detailElements).map(el => el.textContent?.trim() || '');
 
-            for (const text of detailTexts) {
-                if (/(full-time|part-time|contract)/i.test(text)) {
-                    details.jobType = text;
-                } else if (/(on-site|hybrid|remote)/i.test(text)) {
-                    details.workplaceType = text;
-                } else if (text.includes(',')) { // Simple check for location
-                    details.location = text;
-                }
-            }
-            
-            // Fallback for location
-            if (details.location === 'Location not found') {
                 for (const text of detailTexts) {
-                    if (text && text !== details.jobType && text !== details.workplaceType) {
+                    if (/(full-time|part-time|contract)/i.test(text)) {
+                        details.jobType = text;
+                    } else if (/(on-site|hybrid|remote)/i.test(text)) {
+                        details.workplaceType = text;
+                    } else if (text.includes(',')) { // Simple check for location
                         details.location = text;
-                        break;
+                    }
+                }
+                
+                // Fallback for location
+                if (details.location === 'Location not found') {
+                    for (const text of detailTexts) {
+                        if (text && text !== details.jobType && text !== details.workplaceType) {
+                            details.location = text;
+                            break;
+                        }
                     }
                 }
             }
@@ -79,11 +107,17 @@ router.addHandler('LIST', async ({ page, log, crawler }) => {
             }
         }
         return jobs;
-    });
+    }, jobItemSelector);
+
+    log.info(`Found and extracted ${jobsOnPage.length} jobs on page ${page.url()}`);
+
+    if (jobsOnPage.length === 0) {
+        log.warning(`Extraction logic failed, no jobs were extracted from page ${page.url()} even though listings were found.`);
+    }
 
     for (const job of jobsOnPage) {
         if (collectedJobs < maxJobs) {
-            // Pass the extracted details to the DETAIL handler
+            log.info(`Queueing job for detail scraping: ${job.title}`);
             await crawler.addRequests([{ url: job.url, label: 'DETAIL', userData: job }]);
             collectedJobs++;
         }
@@ -91,9 +125,9 @@ router.addHandler('LIST', async ({ page, log, crawler }) => {
 
     if (collectedJobs < maxJobs) {
         await page.waitForTimeout(2000);
-        const nextPageLink = await page.$eval('a[class*="next-page"]', el => (el as HTMLAnchorElement).href).catch(() => null);
+        const nextPageLink = await page.$eval('a[data-ui="next-page"]', el => (el as HTMLAnchorElement).href).catch(() => null);
         if (nextPageLink) {
-            const absoluteNextPageLink = nextPageLink.startsWith('http') ? nextPageLink : `https://jobs.workable.com${nextPageLink}`;
+            const absoluteNextPageLink = new URL(nextPageLink, page.url()).href;
             log.info(`Found next page, adding to queue: ${absoluteNextPageLink}`);
             await crawler.addRequests([{ url: absoluteNextPageLink, label: 'LIST' }]);
         } else {
