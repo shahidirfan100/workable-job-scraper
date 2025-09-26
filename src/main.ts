@@ -91,35 +91,45 @@ router.addHandler('DETAIL', async ({ request, page, log }) => {
                 jobType: 'Job type not found',
                 workplaceType: 'Workplace type not found'
             };
+
+            const ICONS = {
+                LOCATION: 'M12 2C8.13 2 5 5.13 5 9c0',
+                JOB_TYPE: 'M20 6h-4V4c0-1.1',
+                WORKPLACE: 'M10 20v-6h4v6h5v-8h3L12 3'
+            };
+
             const detailElements = document.querySelectorAll('[data-ui="job-detail"]');
+
             for (const el of detailElements) {
                 const text = el.textContent?.trim();
                 if (!text) continue;
 
                 const svg = el.querySelector('svg');
-                let label = null;
                 if (svg) {
-                    label = svg.getAttribute('aria-label');
-                }
-
-                if (label) {
-                    if (label.toLowerCase().includes('location')) {
-                        details.location = text;
-                    } else if (label.toLowerCase().includes('job type') || label.toLowerCase().includes('employment type')) {
-                        details.jobType = text;
-                    } else if (label.toLowerCase().includes('workplace')) {
-                        details.workplaceType = text;
-                    }
-                } else { // Fallback to text content if no aria-label
-                    if ((details.jobType === 'Job type not found') && (text.toLowerCase().includes('full-time') || text.toLowerCase().includes('part-time') || text.toLowerCase().includes('contract'))) {
-                        details.jobType = text;
-                    } else if ((details.workplaceType === 'Workplace type not found') && (text.toLowerCase().includes('on-site') || text.toLowerCase().includes('hybrid') || text.toLowerCase().includes('remote'))) {
-                        details.workplaceType = text;
-                    } else if ((details.location === 'Location not found') && (text.includes(','))) {
-                        details.location = text;
+                    const path = svg.querySelector('path');
+                    if (path) {
+                        const d = path.getAttribute('d') || '';
+                        if (d.startsWith(ICONS.LOCATION)) {
+                            details.location = text;
+                        } else if (d.startsWith(ICONS.JOB_TYPE)) {
+                            details.jobType = text;
+                        } else if (d.startsWith(ICONS.WORKPLACE)) {
+                            details.workplaceType = text;
+                        }
                     }
                 }
             }
+
+            if (details.location === 'Location not found' && details.jobType === 'Job type not found' && details.workplaceType === 'Workplace type not found') {
+                for (const el of detailElements) {
+                    const text = el.textContent?.trim();
+                    if (!text) continue;
+                    if (/(full-time|part-time|contract)/i.test(text)) details.jobType = text;
+                    else if (/(on-site|hybrid|remote)/i.test(text)) details.workplaceType = text;
+                    else if (text.includes(',')) details.location = text;
+                }
+            }
+
             return details;
         });
 
