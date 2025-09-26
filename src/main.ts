@@ -35,30 +35,34 @@ const router = createPlaywrightRouter();
 router.addHandler('LIST', async ({ page, log, crawler }) => {
     log.info(`Processing list page: ${page.url()}`);
     
-    const jobItemSelector = 'li[data-ui="job"] a';
+    const jobCardSelector = 'ul > li';
     try {
-        log.info(`Waiting for job links to appear using selector: ${jobItemSelector}`);
-        await page.waitForSelector(jobItemSelector, { timeout: 45000 });
-        log.info('Job links found. Extracting URLs...');
+        log.info(`Waiting for job cards to appear using selector: ${jobCardSelector}`);
+        await page.waitForSelector(jobCardSelector, { timeout: 45000 });
+        log.info('Job cards found. Extracting data...');
     } catch (error) {
         const html = await page.content();
         await Actor.setValue('DEBUG-LIST-FAILURE.html', html, { contentType: 'text/html' });
-        log.warning(`Could not find job links on page: ${page.url()}. Saved HTML for debugging.`);
+        log.warning(`Could not find job cards on page: ${page.url()}. Saved HTML for debugging.`);
         return;
     }
 
     const jobsOnPage = await page.evaluate((selector) => {
-        const jobLinks = document.querySelectorAll(selector);
+        const jobCards = document.querySelectorAll(selector);
         const jobs = [];
-        for (const link of jobLinks) {
-            const title = link.textContent?.trim() || '';
-            const url = (link as HTMLAnchorElement).href || '';
-            if (title && url) {
-                jobs.push({ title, url });
+        for (const card of jobCards) {
+            const titleElement = card.querySelector('h3');
+            const linkElement = card.querySelector('a');
+            if (titleElement && linkElement) {
+                const title = titleElement.textContent?.trim() || '';
+                const url = linkElement.href || '';
+                if (title && url) {
+                    jobs.push({ title, url });
+                }
             }
         }
         return jobs;
-    }, jobItemSelector);
+    }, jobCardSelector);
 
     log.info(`Found ${jobsOnPage.length} job links on the page.`);
 
@@ -70,11 +74,16 @@ router.addHandler('LIST', async ({ page, log, crawler }) => {
     }
 
     if (collectedJobs < maxJobs) {
-        const nextPageLink = await page.$eval('a[data-ui="next-page"]', el => (el as HTMLAnchorElement).href).catch(() => null);
-        if (nextPageLink) {
-            const absoluteNextPageLink = new URL(nextPageLink, page.url()).href;
-            log.info(`Found next page, adding to queue: ${absoluteNextPageLink}`);
-            await crawler.addRequests([{ url: absoluteNextPageLink, label: 'LIST' }]);
+        const nextPageButton = await page.$('button[aria-label="Next page"]');
+        if (nextPageButton) {
+            log.info('Found next page button, clicking it...');
+            await nextPageButton.click();
+            // After clicking, the page URL will change, so we add the new URL to the queue.
+            // We need to wait for the URL to change.
+            await page.waitForURL((url) => url.href !== page.url());
+            const newUrl = page.url();
+            log.info(`Navigated to next page: ${newUrl}`);
+            await crawler.addRequests([{ url: newUrl, label: 'LIST' }]);
         } else {
             log.info('No more pages to process.');
         }
@@ -87,8 +96,8 @@ router.addHandler('DETAIL', async ({ request, page, log }) => {
     log.info(`Processing job detail page: ${title}`);
 
     try {
-        // Wait for the main content to be available
-        await page.waitForSelector('main[class*="job-view-styles__main"]', { timeout: 60000 });
+        // Wait for the main content to be available by waiting for the title
+        await page.waitForSelector('h1', { timeout: 60000 });
 
         // Handle cookie banner
         try {
@@ -98,10 +107,9 @@ router.addHandler('DETAIL', async ({ request, page, log }) => {
             log.info('Cookie banner not found or could not be clicked, continuing...');
         }
 
-        const company = await page.evaluate(() => {
-            const el = document.querySelector('a[data-ui="company-name"]');
-            return el?.textContent?.trim() || 'Company not found';
-        });
+        const headerText = await page.$eval('h1', (el) => el.textContent || '');
+        const companyMatch = headerText.split(' at ')[1];
+        const company = companyMatch ? companyMatch.trim() : 'Company not found';
 
         const jobPostedDate = await page.evaluate(() => {
             const el = document.querySelector('time');
@@ -109,12 +117,12 @@ router.addHandler('DETAIL', async ({ request, page, log }) => {
         });
 
         const jobDescriptionHTML = await page.evaluate(() => {
-            const el = document.querySelector('div[class*="job-view-styles__description"]');
+            const el = document.querySelector('[data-ui="job-description"]');
             return el?.innerHTML || '';
         });
         
         const jobDescriptionText = await page.evaluate(() => {
-            const el = document.querySelector('div[class*="job-view-styles__description"]');
+            const el = document.querySelector('[data-ui="job-description"]');
             return el?.textContent?.trim() || 'Description not found';
         });
 
@@ -126,15 +134,21 @@ router.addHandler('DETAIL', async ({ request, page, log }) => {
                 workplaceType: 'Workplace type not found',
             };
             
-            // These details are usually in a list. Let's find the container.
-            // The container seems to be a 'ul' that is a sibling of the h1 title's container.
-            const titleElement = document.querySelector('h1');
-            const detailsContainer = titleElement?.closest('div')?.nextElementSibling;
+            const detailItems = document.querySelectorAll('h1 + ul > li');
 
-            if (detailsContainer) {
-                const detailItems = detailsContainer.querySelectorAll('li');
-                for (const item of detailItems) {
-                    const text = item.textContent?.trim() || '';
+            for (const item of detailItems) {
+                const text = item.textContent?.trim() || '';
+                const icon = item.querySelector('svg > use')?.getAttribute('xlink:href');
+
+                if (icon) {
+                    if (icon.includes('location')) {
+                        result.location = text;
+                    } else if (icon.includes('job-type')) {
+                        result.jobType = text;
+                    } else if (icon.includes('workplace')) {
+                        result.workplaceType = text;
+                    }
+                } else { // Fallback for items without icons
                     if (/(full-time|part-time|contract)/i.test(text)) {
                         result.jobType = text;
                     } else if (/(on-site|hybrid|remote)/i.test(text)) {
