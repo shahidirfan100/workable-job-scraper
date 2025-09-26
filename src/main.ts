@@ -120,9 +120,6 @@ router.addHandler('DETAIL', async ({ request, page, log }) => {
                 workplaceType,
                 jobDescriptionHTML,
                 jobDescriptionText,
-                location: 'Location not found',
-                jobType: 'Job type not found',
-                workplaceType: 'Workplace type not found',
             };
         });
 
