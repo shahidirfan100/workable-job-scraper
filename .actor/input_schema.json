@@ -6,12 +6,14 @@
     "keyword": {
       "title": "Keyword",
       "type": "string",
-      "description": "Job title or keyword to search for."
+      "description": "Job title or keyword to search for.",
+      "editor": "textfield"
     },
     "location": {
       "title": "Location",
       "type": "string",
-      "description": "Optional job location (city, state, country)."
+      "description": "Optional job location (city, state, country).",
+      "editor": "textfield"
     },
     "postedDate": {
       "title": "Posted date",
@@ -23,14 +25,16 @@
         "anytime"
       ],
       "default": "anytime",
-      "description": "Filter by posted date."
+      "description": "Filter by posted date.",
+      "editor": "select"
     },
     "resultsWanted": {
       "title": "Results wanted",
       "type": "integer",
       "default": 50,
       "minimum": 1,
-      "description": "Number of job listings to fetch."
+      "description": "Number of job listings to fetch.",
+      "editor": "number"
     }
   },
   "required": [
