@@ -35,7 +35,7 @@ const router = createPlaywrightRouter();
 router.addHandler('LIST', async ({ page, log, crawler }) => {
     log.info(`Processing list page: ${page.url()}`);
     
-    const jobCardSelector = 'ul > li';
+    const jobCardSelector = '[data-ui="jobs-list"] li';
     try {
         log.info(`Waiting for job cards to appear using selector: ${jobCardSelector}`);
         await page.waitForSelector(jobCardSelector, { timeout: 45000 });
@@ -74,16 +74,10 @@ router.addHandler('LIST', async ({ page, log, crawler }) => {
     }
 
     if (collectedJobs < maxJobs) {
-        const nextPageButton = await page.$('button[aria-label="Next page"]');
-        if (nextPageButton) {
-            log.info('Found next page button, clicking it...');
-            await nextPageButton.click();
-            // After clicking, the page URL will change, so we add the new URL to the queue.
-            // We need to wait for the URL to change.
-            await page.waitForURL((url) => url.href !== page.url());
-            const newUrl = page.url();
-            log.info(`Navigated to next page: ${newUrl}`);
-            await crawler.addRequests([{ url: newUrl, label: 'LIST' }]);
+        const nextPageLink = await page.$eval('button[aria-label="Next page"]', el => el.closest('a')?.href).catch(() => null);
+        if (nextPageLink) {
+            log.info(`Found next page, adding to queue: ${nextPageLink}`);
+            await crawler.addRequests([{ url: nextPageLink, label: 'LIST' }]);
         } else {
             log.info('No more pages to process.');
         }
