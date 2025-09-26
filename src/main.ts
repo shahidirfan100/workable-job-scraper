@@ -37,15 +37,45 @@ router.addHandler('LIST', async ({ page, log, crawler }) => {
     await page.waitForTimeout(3000);
 
     const jobsOnPage = await page.evaluate(() => {
-        const jobArticles = document.querySelectorAll('li[class*="job"]');
+        const jobArticles = document.querySelectorAll('li[data-ui="job"]');
         const jobs = [];
         for (const jobArticle of jobArticles) {
-            const titleElement = jobArticle.querySelector('h2 a') as HTMLAnchorElement;
+            const titleElement = jobArticle.querySelector('h2[data-ui="job-title"] a') as HTMLAnchorElement;
             const title = titleElement?.textContent?.trim() || '';
             const url = titleElement?.href || '';
             const fullUrl = url.startsWith('http') ? url : `https://jobs.workable.com${url}`;
+
+            const details = {
+                location: 'Location not found',
+                jobType: 'Job type not found',
+                workplaceType: 'Workplace type not found',
+            };
+
+            const detailElements = jobArticle.querySelectorAll('div > span');
+            const detailTexts = Array.from(detailElements).map(el => el.textContent?.trim() || '');
+
+            for (const text of detailTexts) {
+                if (/(full-time|part-time|contract)/i.test(text)) {
+                    details.jobType = text;
+                } else if (/(on-site|hybrid|remote)/i.test(text)) {
+                    details.workplaceType = text;
+                } else if (text.includes(',')) { // Simple check for location
+                    details.location = text;
+                }
+            }
+            
+            // Fallback for location
+            if (details.location === 'Location not found') {
+                for (const text of detailTexts) {
+                    if (text && text !== details.jobType && text !== details.workplaceType) {
+                        details.location = text;
+                        break;
+                    }
+                }
+            }
+
             if (title && fullUrl) {
-                jobs.push({ title, url: fullUrl });
+                jobs.push({ title, url: fullUrl, ...details });
             }
         }
         return jobs;
@@ -53,7 +83,8 @@ router.addHandler('LIST', async ({ page, log, crawler }) => {
 
     for (const job of jobsOnPage) {
         if (collectedJobs < maxJobs) {
-            await crawler.addRequests([{ url: job.url, label: 'DETAIL', userData: { title: job.title } }]);
+            // Pass the extracted details to the DETAIL handler
+            await crawler.addRequests([{ url: job.url, label: 'DETAIL', userData: job }]);
             collectedJobs++;
         }
     }
@@ -64,7 +95,7 @@ router.addHandler('LIST', async ({ page, log, crawler }) => {
         if (nextPageLink) {
             const absoluteNextPageLink = nextPageLink.startsWith('http') ? nextPageLink : `https://jobs.workable.com${nextPageLink}`;
             log.info(`Found next page, adding to queue: ${absoluteNextPageLink}`);
-            await crawler.addRequests([{ url: absoluteNextPageLink, label: 'LIST' }]);
+            await crawler.addRequests([{ url: absoluteNextNextPageLink, label: 'LIST' }]);
         } else {
             log.info(`No more pages to process.`);
         }
@@ -72,7 +103,7 @@ router.addHandler('LIST', async ({ page, log, crawler }) => {
 });
 
 router.addHandler('DETAIL', async ({ request, page, log }) => {
-    const { title } = request.userData;
+    const { title, location, jobType, workplaceType } = request.userData;
     log.info(`Processing job detail page: ${request.url}`);
 
     try {
@@ -92,58 +123,6 @@ router.addHandler('DETAIL', async ({ request, page, log }) => {
         } catch (e) {
             log.warning(`Could not find company name on ${request.url}`);
         }
-        const jobDetails = await page.evaluate(() => {
-            const details = {
-                location: 'Location not found',
-                jobType: 'Job type not found',
-                workplaceType: 'Workplace type not found',
-            };
-
-            const detailElements = document.querySelectorAll('li[data-ui="job-detail"]');
-
-            for (const el of detailElements) {
-                const text = el.textContent?.trim();
-                if (!text) continue;
-
-                // Location is usually a link
-                if (el.querySelector('a')) {
-                    details.location = text;
-                    continue;
-                }
-
-                // Check for job type (e.g., Full-time, Part-time, Contract)
-                if (/(full-time|part-time|contract)/i.test(text)) {
-                    details.jobType = text;
-                    continue;
-                }
-
-                // Check for workplace type (e.g., On-site, Hybrid, Remote)
-                if (/(on-site|hybrid|remote)/i.test(text)) {
-                    details.workplaceType = text;
-                    continue;
-                }
-            }
-
-            // Fallback logic
-            const foundValues = new Set(Object.values(details));
-            const remainingElements = Array.from(detailElements).filter(el => !foundValues.has(el.textContent?.trim() || ''));
-
-            if (details.location === 'Location not found' && remainingElements.length > 0) {
-                for (const remEl of remainingElements) {
-                    const remText = remEl.textContent?.trim();
-                    if (remText && !/(full-time|part-time|contract|on-site|hybrid|remote)/i.test(remText)) {
-                        details.location = remText;
-                        break;
-                    }
-                }
-            }
-            
-            if (details.location === 'Location not found' && remainingElements.length === 1) {
-                details.location = remainingElements[0].textContent?.trim() || 'Location not found';
-            }
-
-            return details;
-        });
 
         let jobPostedDate = 'Job posted date not found';
         try {
@@ -191,9 +170,9 @@ router.addHandler('DETAIL', async ({ request, page, log }) => {
         await Dataset.pushData({
             jobTitle: title,
             company,
-            location: jobDetails.location,
-            jobType: jobDetails.jobType,
-            workplaceType: jobDetails.workplaceType,
+            location,
+            jobType,
+            workplaceType,
             jobPostedDate,
             jobDescriptionHTML,
             jobDescriptionText,
