@@ -61,32 +61,13 @@ const crawler = new PlaywrightCrawler({
             for (const jobArticle of jobArticles) {
                 // Extract job title
                 const titleElement = jobArticle.querySelector('h2 a') as HTMLAnchorElement;
-                const title = titleElement?.textContent?.trim() || '';
                 const url = titleElement?.href || '';
-                
-                // Extract company
-                const companyElement = jobArticle.querySelector('span[data-ui="company"]');
-                const company = companyElement?.textContent?.trim() || 'Company not found';
-                
-                // Extract location
-                const locationElement = jobArticle.querySelector('span[data-ui="location"]');
-                const location = locationElement?.textContent?.trim() || 'Location not found';
-                
-                // Extract posted date
-                const dateElement = jobArticle.querySelector('span[class*="date"]');
-                const datePosted = dateElement?.textContent?.trim() || 'Date not found';
                 
                 // Construct full URL if relative
                 const fullUrl = url.startsWith('http') ? url : `https://jobs.workable.com${url}`;
                 
-                if (title && fullUrl) { // Only add if we have a title and URL
-                    jobs.push({
-                        title,
-                        url: fullUrl,
-                        company,
-                        location,
-                        datePosted
-                    });
+                if (fullUrl) { // Only add if we have a URL
+                    jobs.push({ url: fullUrl });
                 }
             }
             
@@ -108,26 +89,42 @@ const crawler = new PlaywrightCrawler({
                 
                 // Wait for the job description to load
                 await jobPage.waitForSelector('div[class*="job-description"]', { timeout: 60000 });
+
+                const jobTitle = await jobPage.$eval('h1', el => el.textContent?.trim()) || 'Title not found';
+
+                const company = await jobPage.$eval('a[data-ui="company-name"]', el => el.textContent?.trim()) 
+                    || await jobPage.$eval('[class*="companyName"] a', el => el.textContent?.trim()) 
+                    || 'Company not found';
+
+                const location = await jobPage.$eval('[data-ui="job-location"]', el => el.textContent?.trim()) 
+                    || await jobPage.$eval('[class*="jobDetails"] [class*="location"]', el => el.textContent?.trim()) 
+                    || 'Location not found';
                 
                 // Extract job description - try different possible selectors
-                const jobDescription = await jobPage.$eval('div[class*="job-description"]', el => el.innerHTML) 
+                const jobDescriptionHTML = await jobPage.$eval('div[class*="job-description"]', el => el.innerHTML) 
                     || await jobPage.$eval('div.job__description', el => el.innerHTML)
                     || await jobPage.$eval('.job-description', el => el.innerHTML)
                     || await jobPage.$eval('main', el => el.innerHTML?.substring(0, 2000)) // fallback to main content
+                    || '';
+
+                const jobDescriptionText = await jobPage.$eval('div[class*="job-description"]', el => el.textContent?.trim()) 
+                    || await jobPage.$eval('div.job__description', el => el.textContent?.trim())
+                    || await jobPage.$eval('.job-description', el => el.textContent?.trim())
+                    || await jobPage.$eval('main', el => el.textContent?.trim()?.substring(0, 2000)) // fallback to main content
                     || 'Description not found';
 
                 // Push complete job data to dataset
                 await Dataset.pushData({
-                    jobTitle: job.title,
-                    company: job.company,
-                    location: job.location,
-                    jobDescription: jobDescription,
-                    postedDate: job.datePosted,
+                    jobTitle,
+                    company,
+                    location,
+                    jobDescriptionHTML,
+                    jobDescriptionText,
                     jobLink: job.url
                 });
 
                 collectedJobs++;
-                log.info(`Collected job #${collectedJobs}: ${job.title}`);
+                log.info(`Collected job #${collectedJobs}: ${jobTitle}`);
 
                 if (collectedJobs >= maxJobs) {
                     log.info(`Reached the requested number of jobs (${maxJobs}). Stopping.`);
