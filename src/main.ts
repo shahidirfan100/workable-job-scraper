@@ -89,13 +89,7 @@ router.addHandler('DETAIL', async ({ request, page, log }) => {
             const details = {
                 location: 'Location not found',
                 jobType: 'Job type not found',
-                workplaceType: 'Workplace type not found'
-            };
-
-            const ICONS = {
-                LOCATION: 'M12 2C8.13 2 5 5.13 5 9c0',
-                JOB_TYPE: 'M20 6h-4V4c0-1.1',
-                WORKPLACE: 'M10 20v-6h4v6h5v-8h3L12 3'
+                workplaceType: 'Workplace type not found',
             };
 
             const detailElements = document.querySelectorAll('[data-ui="job-detail"]');
@@ -104,30 +98,33 @@ router.addHandler('DETAIL', async ({ request, page, log }) => {
                 const text = el.textContent?.trim();
                 if (!text) continue;
 
-                const svg = el.querySelector('svg');
-                if (svg) {
-                    const path = svg.querySelector('path');
-                    if (path) {
-                        const d = path.getAttribute('d') || '';
-                        if (d.startsWith(ICONS.LOCATION)) {
-                            details.location = text;
-                        } else if (d.startsWith(ICONS.JOB_TYPE)) {
-                            details.jobType = text;
-                        } else if (d.startsWith(ICONS.WORKPLACE)) {
-                            details.workplaceType = text;
-                        }
-                    }
+                // Location is usually a link
+                if (el.querySelector('a')) {
+                    details.location = text;
+                    continue;
+                }
+
+                // Check for job type (e.g., Full-time, Part-time, Contract)
+                if (/(full-time|part-time|contract)/i.test(text)) {
+                    details.jobType = text;
+                    continue;
+                }
+
+                // Check for workplace type (e.g., On-site, Hybrid, Remote)
+                if (/(on-site|hybrid|remote)/i.test(text)) {
+                    details.workplaceType = text;
+                    continue;
                 }
             }
 
-            if (details.location === 'Location not found' && details.jobType === 'Job type not found' && details.workplaceType === 'Workplace type not found') {
-                for (const el of detailElements) {
-                    const text = el.textContent?.trim();
-                    if (!text) continue;
-                    if (/(full-time|part-time|contract)/i.test(text)) details.jobType = text;
-                    else if (/(on-site|hybrid|remote)/i.test(text)) details.workplaceType = text;
-                    else if (text.includes(',')) details.location = text;
-                }
+            // Fallback logic: if one of the details is still not found,
+            // try to identify it from the remaining elements.
+            const foundValues = new Set(Object.values(details));
+            const remainingElements = Array.from(detailElements).filter(el => !foundValues.has(el.textContent?.trim() || ''));
+
+            if (details.location === 'Location not found' && remainingElements.length > 0) {
+                // Often, the location is the one left over.
+                details.location = remainingElements[0].textContent?.trim() || 'Location not found';
             }
 
             return details;
