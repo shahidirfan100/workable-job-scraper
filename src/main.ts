@@ -185,6 +185,13 @@ const proxyConfiguration = await Actor.createProxyConfiguration();
 const crawler = new PlaywrightCrawler({
     proxyConfiguration,
     requestHandler: router,
+    navigationTimeoutSecs: 120, // Increased navigation timeout
+    preNavigationHooks: [
+        async ({ page }) => {
+            // Block images, fonts, and CSS to speed up loading
+            await page.route('**/*.{png,jpg,jpeg,gif,svg,woff,woff2,css}', (route) => route.abort());
+        },
+    ],
     maxRequestsPerCrawl: maxJobs + 100,
     requestHandlerTimeoutSecs: 120,
     failedRequestHandler({ request, log }) {
