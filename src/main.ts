@@ -91,64 +91,44 @@ router.addHandler('DETAIL', async ({ request, page, log }) => {
     try {
         // Wait for the main content to be available by waiting for the title
         await page.waitForSelector('h1', { timeout: 60000 });
-
-        // Handle cookie banner
-        try {
-            await page.click('button:has-text("Accept all cookies")', { timeout: 5000 });
-            log.info('Accepted cookie banner.');
-        } catch (e) {
-            log.info('Cookie banner not found or could not be clicked, continuing...');
-        }
-
-        const company = await page.evaluate(() => {
-            const el = document.querySelector('[data-ui="company-name"]');
-            return el?.textContent?.trim() || 'Company not found';
-        });
-
-        const jobPostedDate = await page.evaluate(() => {
-            const el = document.querySelector('time[data-ui="job-posted-at"]');
-            return el?.textContent?.trim() || 'Job posted date not found';
-        });
-
-        const jobDescriptionHTML = await page.evaluate(() => {
-            const el = document.querySelector('[data-ui="job-description"]');
-            return el?.innerHTML || '';
-        });
         
-        const jobDescriptionText = await page.evaluate(() => {
-            const el = document.querySelector('[data-ui="job-description"]');
-            return el?.textContent?.trim() || 'Description not found';
-        });
-
-        // New robust logic for location, job type, and workplace type
-        const details = await page.evaluate(() => {
-            const result = {
+        // Combined evaluation for better performance and robustness
+        const jobDetails = await page.evaluate(() => {
+            // Handle cookie banner inside the browser context
+            const cookieButton = document.querySelector('button:has-text("Accept all cookies")') as HTMLButtonElement | null;
+            if (cookieButton) {
+                cookieButton.click();
+            }
+            
+            const getText = (selector: string) => document.querySelector(selector)?.textContent?.trim() || `${selector} not found`;
+            const getHtml = (selector: string) => document.querySelector(selector)?.innerHTML || '';
+            
+            const company = getText('[data-ui="company-name"]');
+            const jobPostedDate = getText('time[data-ui="job-posted-at"]');
+            const location = getText('[data-ui="job-location"]');
+            const jobType = getText('[data-ui="job-type"]');
+            const workplaceType = getText('[data-ui="workplace-type"]');
+            
+            const jobDescriptionHTML = getHtml('[data-ui="job-description"]');
+            const jobDescriptionText = getText('[data-ui="job-description"]');
+            
+            return {
+                company,
+                jobPostedDate,
+                location,
+                jobType,
+                workplaceType,
+                jobDescriptionHTML,
+                jobDescriptionText,
                 location: 'Location not found',
                 jobType: 'Job type not found',
                 workplaceType: 'Workplace type not found',
             };
-            
-            const locationElement = document.querySelector('[data-ui="job-location"]');
-            if(locationElement) result.location = locationElement.textContent?.trim() || 'Location not found';
-
-            const jobTypeElement = document.querySelector('[data-ui="job-type"]');
-            if(jobTypeElement) result.jobType = jobTypeElement.textContent?.trim() || 'Job type not found';
-
-            const workplaceTypeElement = document.querySelector('[data-ui="workplace-type"]');
-            if(workplaceTypeElement) result.workplaceType = workplaceTypeElement.textContent?.trim() || 'Workplace type not found';
-
-            return result;
         });
 
         await Dataset.pushData({
             jobTitle: title,
-            company,
-            location: details.location,
-            jobType: details.jobType,
-            workplaceType: details.workplaceType,
-            jobPostedDate,
-            jobDescriptionHTML,
-            jobDescriptionText,
+            ...jobDetails,
             jobLink: request.url,
         });
         log.info(`Successfully scraped job: ${title}`);
