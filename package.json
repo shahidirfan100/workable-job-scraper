@@ -1,8 +1,7 @@
 {
   "name": "workable-crawlee-playwright-actor",
   "version": "1.0.0",
-  "description": "Apify actor: Scrape jobs from jobs.workable.com using Crawlee + Playwright + Chrome (TypeScript).",
-  "main": "dist/main.js",
+  "type": "commonjs",
   "scripts": {
     "start": "node dist/main.js",
     "build": "tsc",
@@ -13,7 +12,6 @@
     "crawlee": "^3.15.0"
   },
   "devDependencies": {
-    "typescript": "^5.4.0",
-    "@types/node": "^18.16.18"
+    "typescript": "^5.4.0"
   }
 }
