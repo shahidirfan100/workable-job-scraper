@@ -35,7 +35,7 @@ const router = createPlaywrightRouter();
 router.addHandler('LIST', async ({ page, log, crawler }) => {
     log.info(`Processing list page: ${page.url()}`);
     
-    const jobCardSelector = '[data-ui="jobs-list"] li';
+    const jobCardSelector = 'li.whr-item';
     try {
         log.info(`Waiting for job cards to appear using selector: ${jobCardSelector}`);
         await page.waitForSelector(jobCardSelector, { timeout: 45000 });
@@ -51,10 +51,9 @@ router.addHandler('LIST', async ({ page, log, crawler }) => {
         const jobCards = document.querySelectorAll(selector);
         const jobs = [];
         for (const card of jobCards) {
-            const titleElement = card.querySelector('h3');
-            const linkElement = card.querySelector('a');
-            if (titleElement && linkElement) {
-                const title = titleElement.textContent?.trim() || '';
+            const linkElement = card.querySelector('h3.whr-title a') as HTMLAnchorElement;
+            if (linkElement) {
+                const title = linkElement.textContent?.trim() || '';
                 const url = linkElement.href || '';
                 if (title && url) {
                     jobs.push({ title, url });
@@ -95,28 +94,29 @@ router.addHandler('DETAIL', async ({ request, page, log }) => {
 
         // Handle cookie banner
         try {
-            await page.click('#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll', { timeout: 5000 });
+            await page.click('button:has-text("Accept all cookies")', { timeout: 5000 });
             log.info('Accepted cookie banner.');
         } catch (e) {
             log.info('Cookie banner not found or could not be clicked, continuing...');
         }
 
-        const headerText = await page.$eval('h1', (el) => el.textContent || '');
-        const companyMatch = headerText.split(' at ')[1];
-        const company = companyMatch ? companyMatch.trim() : 'Company not found';
+        const company = await page.evaluate(() => {
+            const el = document.querySelector('[data-ui="company-name"]');
+            return el?.textContent?.trim() || 'Company not found';
+        });
 
         const jobPostedDate = await page.evaluate(() => {
-            const el = document.querySelector('time');
+            const el = document.querySelector('time, .whr-date');
             return el?.textContent?.trim() || 'Job posted date not found';
         });
 
         const jobDescriptionHTML = await page.evaluate(() => {
-            const el = document.querySelector('[data-ui="job-description"]');
+            const el = document.querySelector('.job-description, div#description');
             return el?.innerHTML || '';
         });
         
         const jobDescriptionText = await page.evaluate(() => {
-            const el = document.querySelector('[data-ui="job-description"]');
+            const el = document.querySelector('.job-description, div#description');
             return el?.textContent?.trim() || 'Description not found';
         });
 
@@ -128,30 +128,15 @@ router.addHandler('DETAIL', async ({ request, page, log }) => {
                 workplaceType: 'Workplace type not found',
             };
             
-            const detailItems = document.querySelectorAll('h1 + ul > li');
+            const locationElement = document.querySelector('[data-ui="job-location"]');
+            if(locationElement) result.location = locationElement.textContent?.trim() || 'Location not found';
 
-            for (const item of detailItems) {
-                const text = item.textContent?.trim() || '';
-                const icon = item.querySelector('svg > use')?.getAttribute('xlink:href');
+            const jobTypeElement = document.querySelector('[data-ui="job-type"]');
+            if(jobTypeElement) result.jobType = jobTypeElement.textContent?.trim() || 'Job type not found';
 
-                if (icon) {
-                    if (icon.includes('location')) {
-                        result.location = text;
-                    } else if (icon.includes('job-type')) {
-                        result.jobType = text;
-                    } else if (icon.includes('workplace')) {
-                        result.workplaceType = text;
-                    }
-                } else { // Fallback for items without icons
-                    if (/(full-time|part-time|contract)/i.test(text)) {
-                        result.jobType = text;
-                    } else if (/(on-site|hybrid|remote)/i.test(text)) {
-                        result.workplaceType = text;
-                    } else if (text) { // Assume the remaining item is location
-                        result.location = text;
-                    }
-                }
-            }
+            const workplaceTypeElement = document.querySelector('[data-ui="workplace-type"]');
+            if(workplaceTypeElement) result.workplaceType = workplaceTypeElement.textContent?.trim() || 'Workplace type not found';
+
             return result;
         });
 
