@@ -47,58 +47,44 @@ const crawler = new PlaywrightCrawler({
     async requestHandler({ page, request, log }) {
         log.info(`Processing: ${request.url}`);
         
-        // Wait for job listings to load - using the correct selector
-        await page.waitForSelector('article.job', { timeout: 60000 });
+        // Wait for job listings container to load
+        await page.waitForSelector('div[data-cy="jobs-list"]', { timeout: 60000 });
+        
+        // Wait a bit more for job cards to fully load
+        await page.waitForTimeout(3000);
         
         // Extract job listings from the current page
         const jobsOnPage = await page.evaluate(() => {
-            const jobArticles = document.querySelectorAll('article.job');
+            const jobArticles = document.querySelectorAll('article.job-card[data-cy="job-card"]');
             const jobs = [];
 
             for (const jobArticle of jobArticles) {
-                // Extract job title - try different possible selectors
-                const titleElement = 
-                    jobArticle.querySelector('h2 a') || 
-                    jobArticle.querySelector('h3 a') || 
-                    jobArticle.querySelector('a[data-qa="job-title"]');
+                // Extract job title
+                const titleElement = jobArticle.querySelector('a[data-cy="job-title-link"]') as HTMLAnchorElement;
                 const title = titleElement?.textContent?.trim() || '';
-                const url = (titleElement as HTMLAnchorElement)?.href || '';
+                const url = titleElement?.href || jobArticle.querySelector('h2 a')?.getAttribute('href') || '';
                 
-                // Extract company - try different possible selectors
-                const companyElement = 
-                    jobArticle.querySelector('[data-qa="job-company"]') || 
-                    jobArticle.querySelector('.job-company') || 
-                    jobArticle.querySelector('.company');
+                // Extract company
+                const companyElement = jobArticle.querySelector('[data-cy="job-company"]');
                 const company = companyElement?.textContent?.trim() || 'Company not found';
                 
-                // Extract location - try different possible selectors
-                const locationElement = 
-                    jobArticle.querySelector('[data-qa="job-location"]') || 
-                    jobArticle.querySelector('.job-location') || 
-                    jobArticle.querySelector('.location');
+                // Extract location
+                const locationElement = jobArticle.querySelector('[data-cy="job-location"]');
                 const location = locationElement?.textContent?.trim() || 'Location not found';
                 
-                // Extract department (if available)
-                const departmentElement = 
-                    jobArticle.querySelector('[data-qa="job-department"]') || 
-                    jobArticle.querySelector('.job-department') || 
-                    jobArticle.querySelector('.department');
-                const department = departmentElement?.textContent?.trim() || '';
-                
-                // Extract posted date - try different possible selectors
-                const dateElement = 
-                    jobArticle.querySelector('[data-qa="job-date"]') || 
-                    jobArticle.querySelector('.job-date') || 
-                    jobArticle.querySelector('.date-posted');
+                // Extract posted date
+                const dateElement = jobArticle.querySelector('[data-cy="job-date"]');
                 const datePosted = dateElement?.textContent?.trim() || 'Date not found';
                 
-                if (title && url) { // Only add if we have a title and URL
+                // Construct full URL if relative
+                const fullUrl = url.startsWith('http') ? url : `https://jobs.workable.com${url}`;
+                
+                if (title && fullUrl) { // Only add if we have a title and URL
                     jobs.push({
                         title,
-                        url,
+                        url: fullUrl,
                         company,
                         location,
-                        department,
                         datePosted
                     });
                 }
@@ -120,12 +106,15 @@ const crawler = new PlaywrightCrawler({
                 const jobPage = await page.context().newPage();
                 await jobPage.goto(job.url, { waitUntil: 'networkidle', timeout: 60000 });
                 
+                // Wait for the job description to load
+                await jobPage.waitForSelector('[data-cy="job-content"]', { timeout: 30000 });
+                
                 // Extract job description - try different possible selectors
-                const jobDescription = await jobPage.$eval('[data-qa="job-description"]', el => el.textContent?.trim()) 
+                const jobDescription = await jobPage.$eval('[data-cy="job-content"]', el => el.textContent?.trim()) 
                     || await jobPage.$eval('div.job__description', el => el.textContent?.trim())
                     || await jobPage.$eval('.job-description', el => el.textContent?.trim())
-                    || await jobPage.$eval('[data-qa="job-content"]', el => el.textContent?.trim())
-                    || await jobPage.$eval('article', el => el.textContent?.trim()?.substring(0, 1000)) // fallback to article content
+                    || await jobPage.$eval('[data-cy="job-description"]', el => el.textContent?.trim())
+                    || await jobPage.$eval('main', el => el.textContent?.trim()?.substring(0, 2000)) // fallback to main content
                     || 'Description not found';
 
                 // Push complete job data to dataset
@@ -160,15 +149,16 @@ const crawler = new PlaywrightCrawler({
             await page.waitForTimeout(2000); // Wait before looking for next page
             
             // Look for next page link and add it to the crawler if needed
-            const nextPageLink = await page.$eval('a[rel="next"]', el => (el as HTMLAnchorElement).href).catch(() => null) 
-                || await page.$eval('.next-page', el => (el as HTMLAnchorElement).href).catch(() => null)
-                || await page.$eval('button.next + a', el => (el as HTMLAnchorElement).href).catch(() => null);
+            const nextPageLink = await page.$eval('div[data-cy="pagination"] a[rel="next"]', el => (el as HTMLAnchorElement).href).catch(() => null);
+            
             if (nextPageLink && collectedJobs < maxJobs) {
-                log.info(`Found next page, adding to queue...`);
-                await crawler.addRequests([nextPageLink]);
+                // Make sure the next page URL is absolute
+                const absoluteNextPageLink = nextPageLink.startsWith('http') ? nextPageLink : `https://jobs.workable.com${nextPageLink}`;
+                log.info(`Found next page, adding to queue: ${absoluteNextPageLink}`);
+                await crawler.addRequests([absoluteNextPageLink]);
             } else {
                 if (collectedJobs < maxJobs) {
-                    log.info(`No more pages to process but haven't reached desired number of jobs.`);
+                    log.info(`No more pages to process but haven't reached desired number of jobs. Found ${collectedJobs} jobs.`);
                 }
             }
         }
