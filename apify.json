@@ -1,5 +1,10 @@
 {
   "name": "workable-job-scraper",
-  "version": "0.1.0",
-  "buildTag": "latest"
+  "version": "1.0.0",
+  "buildTag": "latest",
+  "description": "Scrapes job listings from Workable job boards with keyword, location, and date filtering.",
+  "author": "Your Name",
+  "template": "ts-crawlee-playwright",
+  "environmentVariables": [],
+  "secretInputs": []
 }

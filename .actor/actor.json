@@ -1,10 +1,19 @@
 {
   "actorSpecification": 1,
-  "name": "workable-crawlee-playwright-actor",
+  "name": "workable-job-scraper",
   "title": "Workable Job Scraper",
-  "description": "Scrapes jobs from Workable job board.",
-  "version": "0.1",
-  "input": "./input_schema.json",
-  "storages": {},
-  "dockerfile": "./Dockerfile"
+  "description": "Scrapes job listings from Workable job boards with keyword, location, and date filtering.",
+  "version": "1.0",
+  "input": "input_schema.json",
+  "storages": {
+    "dataset": {
+      "default": {
+        "title": "Job Listings",
+        "description": "Dataset containing job listings scraped from Workable"
+      }
+    }
+  },
+  "dockerfile": "Dockerfile",
+  "readme": "README.md",
+  "icon": "https://apify.com/img/actors/icon/web-scraper.png"
 }

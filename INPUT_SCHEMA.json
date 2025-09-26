@@ -6,12 +6,13 @@
     "keyword": {
       "title": "Keyword",
       "type": "string",
-      "description": "Job title or keyword to search for."
+      "description": "Job title or keyword to search for.",
+      "required": true
     },
     "location": {
       "title": "Location",
       "type": "string",
-      "description": "Optional job location."
+      "description": "Optional job location (city, state, country)."
     },
     "postedDate": {
       "title": "Posted date",
@@ -20,19 +21,22 @@
         "24h",
         "7d",
         "30d",
-        "any"
+        "anytime"
       ],
-      "default": "any",
+      "default": "anytime",
       "description": "Filter by posted date."
     },
-    "maxItems": {
-      "title": "Max items",
+    "resultsWanted": {
+      "title": "Results wanted",
       "type": "integer",
       "default": 50,
-      "description": "Maximum number of jobs to fetch."
+      "minimum": 1,
+      "required": true,
+      "description": "Number of job listings to fetch."
     }
   },
   "required": [
-    "keyword"
+    "keyword",
+    "resultsWanted"
   ]
 }
