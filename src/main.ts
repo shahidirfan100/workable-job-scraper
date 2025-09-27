@@ -5,17 +5,17 @@ import type { Page } from 'playwright';
 /********************
  * Workable Scraper – fast & parallel (Crawlee 3.15)
  * - JSON-LD first, DOM/shadow fallbacks
+ * - Bulk enqueue, high concurrency
  * - No CDP, no networkidle
- * - Tight waits, high concurrency (batches)
  ********************/
 
 await Actor.init();
 
 interface InputSchema {
   keyword: string;
-  location?: string; // optional slug like `united-states-of-america` or city slug
+  location?: string; // optional slug like `united-states-of-america` or city/country slug
   postedDate?: '24h' | '7d' | '30d' | 'anytime';
-  resultsWanted?: number; // number of detail pages to save
+  resultsWanted?: number;
 }
 
 const input = (await Actor.getInput<InputSchema>()) ?? {
@@ -51,7 +51,7 @@ function buildSearchUrl(): string {
   return `${base}?${params.toString()}`;
 }
 
-// Deep link collection (DOM + shadow + same-origin iframes)
+// Collect /view/ links, including shadow roots and same-origin iframes
 async function collectViewLinksDeep(page: Page): Promise<string[]> {
   return await page.evaluate(() => {
     const out = new Set<string>();
@@ -60,37 +60,28 @@ async function collectViewLinksDeep(page: Page): Promise<string[]> {
       root.querySelectorAll?.('a[href^="/view/"]').forEach((a) => {
         try {
           const hrefAttr = (a as HTMLAnchorElement).getAttribute('href');
-          const absolute = (a as HTMLAnchorElement).href || (hrefAttr ? new URL(hrefAttr, location.origin).href : '');
-          if (absolute) out.add(absolute);
+          const abs = (a as HTMLAnchorElement).href || (hrefAttr ? new URL(hrefAttr, location.origin).href : '');
+          if (abs) out.add(abs);
         } catch {}
       });
     };
 
-    const visit = (root: Document | ShadowRoot) => {
+    const walk = (root: Document | ShadowRoot) => {
       addLinks(root);
-      const walker = document.createTreeWalker(root as any, NodeFilter.SHOW_ELEMENT);
-      let node = walker.currentNode as Element | null;
+      const tw = document.createTreeWalker(root as any, NodeFilter.SHOW_ELEMENT);
+      let node = tw.currentNode as Element | null;
       while (node) {
         const sr = (node as any).shadowRoot as ShadowRoot | null | undefined;
-        if (sr) {
-          addLinks(sr);
-          const innerWalker = document.createTreeWalker(sr as any, NodeFilter.SHOW_ELEMENT);
-          let inner = innerWalker.currentNode as Element | null;
-          while (inner) {
-            const innerSr = (inner as any).shadowRoot as ShadowRoot | null | undefined;
-            if (innerSr) addLinks(innerSr);
-            inner = innerWalker.nextNode() as Element | null;
-          }
-        }
-        node = walker.nextNode() as Element | null;
+        if (sr) addLinks(sr);
+        node = tw.nextNode() as Element | null;
       }
     };
 
-    visit(document);
+    walk(document);
     document.querySelectorAll('iframe').forEach((ifr) => {
       try {
         const doc = (ifr as HTMLIFrameElement).contentDocument;
-        if (doc) visit(doc);
+        if (doc) walk(doc);
       } catch {}
     });
 
@@ -98,7 +89,6 @@ async function collectViewLinksDeep(page: Page): Promise<string[]> {
   });
 }
 
-// ---- JSON-LD helpers ----
 type JobPosting = {
   '@type'?: string;
   title?: string;
@@ -171,31 +161,17 @@ async function getInnerHTMLDeep(page: Page, selectors: string[]): Promise<string
     };
     let html = tryIn(document);
     if (html) return html;
-    const walk = (root: Document | ShadowRoot): string | null => {
-      const tw = document.createTreeWalker(root as any, NodeFilter.SHOW_ELEMENT);
-      let node = tw.currentNode as Element | null;
-      while (node) {
-        const sr = (node as any).shadowRoot as ShadowRoot | null | undefined;
-        if (sr) {
-          const got = tryIn(sr);
-          if (got) return got;
-          const innerTw = document.createTreeWalker(sr as any, NodeFilter.SHOW_ELEMENT);
-          let inner = innerTw.currentNode as Element | null;
-          while (inner) {
-            const innerSr = (inner as any).shadowRoot as ShadowRoot | null | undefined;
-            if (innerSr) {
-              const got2 = tryIn(innerSr);
-              if (got2) return got2;
-            }
-            inner = innerTw.nextNode() as Element | null;
-          }
-        }
-        node = tw.nextNode() as Element | null;
+
+    const tw = document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT);
+    let node = tw.currentNode as Element | null;
+    while (node) {
+      const sr = (node as any).shadowRoot as ShadowRoot | null | undefined;
+      if (sr) {
+        const got = tryIn(sr);
+        if (got) return got;
       }
-      return null;
-    };
-    html = walk(document);
-    if (html) return html;
+      node = tw.nextNode() as Element | null;
+    }
     for (const ifr of Array.from(document.querySelectorAll('iframe'))) {
       try {
         const doc = (ifr as HTMLIFrameElement).contentDocument;
@@ -216,33 +192,23 @@ let collected = 0;
 const seenUrls = new Set<string>();
 const router = createPlaywrightRouter();
 
-// LIST: grab links fast, enqueue in bulk
+// LIST: gather quickly, bulk enqueue
 router.addHandler('LIST', async ({ page, request, log, crawler }) => {
   log.info(`Processing list page: ${request.url}`);
 
-  // Block only heavy media (keep CSS/fonts)
+  // Block heavy media only
   await page.route('**/*', (route) => {
     const url = route.request().url();
     if (/\.(?:png|jpg|jpeg|gif|webp|ico|mp4|webm)(?:\?|$)/i.test(url)) return route.abort();
     return route.continue();
   });
-
   await page.setViewportSize({ width: 1440, height: 900 });
-
-  // Light anti-bot (no CDP)
-  await page.addInitScript(() => {
-    try {
-      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] as any });
-    } catch {}
-  });
   await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
 
   // Fast nav
-  await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+  await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 25_000 });
 
-  // Cookie banner quick handle
+  // Cookie banner
   const cookieButtons = [
     'button:has-text("Accept all")',
     'button:has-text("Accept All")',
@@ -261,12 +227,12 @@ router.addHandler('LIST', async ({ page, request, log, crawler }) => {
   const cardSelector =
     '[data-ui="job-card"], [data-testid="job-card"], li[data-ui="job-card"], div[data-ui="job-card"]';
 
-  // Short wait for results
+  // Short wait for first results (8s cap)
   await Promise.race([
     page.waitForSelector(cardSelector, { timeout: 8_000, state: 'attached' }),
     page.waitForSelector('a[href^="/view/"]', { timeout: 8_000, state: 'attached' }),
   ]).catch(async (err) => {
-    log.warning('Job cards/links not found quickly. Saving HTML + screenshot.');
+    log.warning('No results quickly. Saving HTML + screenshot.');
     await KeyValueStore.setValue('LIST_HTML_DEBUG', await page.content(), { contentType: 'text/html' });
     await KeyValueStore.setValue('LIST_SCREENSHOT_DEBUG', await page.screenshot({ fullPage: true }), {
       contentType: 'image/png',
@@ -274,47 +240,47 @@ router.addHandler('LIST', async ({ page, request, log, crawler }) => {
     throw err;
   });
 
-  // Tight scroll loop (batch-friendly)
-  let lastSeen = 0;
-  const target = Math.min(resultsWanted, 100);
+  // Tight scroll loop (8–12 passes), count only simple links here (cheap)
+  const target = Math.min(resultsWanted, 120);
+  let lastLinkCount = 0;
   for (let i = 0; i < 12; i++) {
-    await page.evaluate(() => window.scrollBy(0, 900));
-    await sleep(180 + Math.floor(Math.random() * 80));
-    const [cardCount, linkCount] = await Promise.all([
-      page.locator(cardSelector).count().catch(() => 0),
-      page.locator('a[href^="/view/"]').count().catch(() => 0),
-    ]);
-    const deepCount = (await collectViewLinksDeep(page)).length;
-    const seen = Math.max(cardCount, linkCount, deepCount);
-    if (seen >= target || seen === lastSeen) break;
-    lastSeen = seen;
+    await page.evaluate(() => window.scrollBy(0, 1000));
+    await sleep(150 + Math.floor(Math.random() * 80));
+    const simpleCount = await page.locator('a[href^="/view/"]').count().catch(() => 0);
+    if (simpleCount >= target || simpleCount === lastLinkCount) break;
+    lastLinkCount = simpleCount;
   }
 
-  // Gather detail links
+  // One deep pass (shadow + iframes) at the end
   const mainLinks: string[] = (await page
-    .$$eval('a[href^="/view/"]', (as) =>
-      Array.from(new Set(as.map((a) => new URL((a as HTMLAnchorElement).href, location.origin).href))),
+    .$eval('body', () =>
+      Array.from(
+        new Set(
+          Array.from(document.querySelectorAll('a[href^="/view/"]')).map((a) =>
+            new URL((a as HTMLAnchorElement).href, location.origin).href,
+          ),
+        ),
+      ),
     )
     .catch(() => [])) as string[];
   const deepLinks = await collectViewLinksDeep(page);
   const links = Array.from(new Set([...mainLinks, ...deepLinks])).slice(0, resultsWanted);
 
   if (!links.length) {
-    log.warning('No detail links found after scroll. Saving artifacts.');
+    log.warning('No detail links found. Saving artifacts.');
     await KeyValueStore.setValue('LIST_HTML_DEBUG_EMPTY', await page.content(), { contentType: 'text/html' });
     await KeyValueStore.setValue('LIST_SCREENSHOT_DEBUG_EMPTY', await page.screenshot({ fullPage: true }), {
       contentType: 'image/png',
     });
   }
 
-  // Enqueue in bulk for parallel processing
-  const batch = links.filter((u) => u && !seenUrls.has(u));
-  batch.forEach((u) => seenUrls.add(u));
-  await crawler.addRequests(batch.map((url) => ({ url, label: 'DETAIL' })));
-  log.info(`Enqueued ${batch.length} detail pages (total seen: ${seenUrls.size}).`);
+  const toEnqueue = links.filter((u) => u && !seenUrls.has(u));
+  toEnqueue.forEach((u) => seenUrls.add(u));
+  await crawler.addRequests(toEnqueue.map((url) => ({ url, label: 'DETAIL' })));
+  log.info(`Enqueued ${toEnqueue.length} detail pages (total seen: ${seenUrls.size}).`);
 });
 
-// DETAIL: parallelized, short waits, no CDP
+// DETAIL: fast parse, parallel reads, short caps
 router.addHandler('DETAIL', async ({ page, request, log }) => {
   await page.route('**/*', (route) => {
     const url = route.request().url();
@@ -322,50 +288,54 @@ router.addHandler('DETAIL', async ({ page, request, log }) => {
     return route.continue();
   });
   await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
-  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.setViewportSize({ width: 1366, height: 900 });
 
-  await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 25_000 });
+  // Short navigation + tiny safety wait for main content
+  await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 22_000 });
+  await page.waitForSelector('h1, h2', { timeout: 3_000 }).catch(() => void 0);
 
+  // JSON-LD
   const ld = await parseJobPostingJSONLD(page);
 
-  const title =
-    (ld?.title ?? (await page.locator('h1, h2').first().textContent().catch(() => null)) ?? '')
-      .toString()
-      .trim() || null;
-
-  const companyDom =
-    (await page
+  // Parallel DOM fallbacks
+  const [companyDom, locDom, articleText] = await Promise.all([
+    page
       .locator('[data-ui="company-name"], [data-testid="company-name"], a[href*="/company/"]')
       .first()
       .textContent()
-      .catch(() => null)) ?? '';
-  const company = extractCompanyFromLD(ld) ?? (companyDom ? companyDom.toString().trim() : null);
-
-  const locDom =
-    (await page
+      .catch(() => null),
+    page
       .locator('[data-ui="job-location"], [data-testid="job-location"], [data-ui="location"], header a[href*="/search/"]')
       .first()
       .textContent()
-      .catch(() => null)) ?? '';
-  const locationText = extractLocationFromLD(ld) ?? (locDom ? locDom.toString().trim() : null);
+      .catch(() => null),
+    page.locator('article').first().textContent().catch(() => null),
+  ]);
+
+  const title =
+    (ld?.title ??
+      (await page.locator('h1, h2').first().textContent().catch(() => null)) ??
+      '')?.toString().trim() || null;
+
+  const company = extractCompanyFromLD(ld) ?? (companyDom ? companyDom.toString().trim() : null);
+
+  const locationText =
+    extractLocationFromLD(ld) ?? (locDom ? locDom.toString().trim() : null);
 
   const employmentType =
-    normalizeEmploymentType(ld?.employmentType ?? null) ??
-    (await guessEmploymentTypeFromDOM(page));
+    normalizeEmploymentType(ld?.employmentType ?? null) ?? (await guessEmploymentTypeFromDOM(page));
 
   const ldDesc = (ld?.description ?? '') as string;
   const descriptionHtml =
     (/<\w+/.test(ldDesc) && ldDesc) ||
     (await getInnerHTMLDeep(page, ['[data-ui="job-description"]', '[data-ui="description"]', 'article'])) ||
-    `<p>${((await page.locator('article').first().textContent().catch(() => '')) ?? '')
-      .toString()
-      .trim()}</p>`;
+    `<p>${(articleText ?? '').toString().trim()}</p>`;
 
   const externalId = (() => {
     const id = (ld as any)?.identifier;
     if (!id) return null;
     if (Array.isArray(id)) return (id[0] && id[0].value) ? (id[0].value as string) : null;
-    return (id.value ?? null) as string | null;
+    return (id?.value ?? null) as string | null;
   })();
 
   await Dataset.pushData({
@@ -401,13 +371,14 @@ const crawler = new PlaywrightCrawler({
       ],
     },
   },
-  maxConcurrency: 10,            // ↑ parallel detail pages (batching effect)
-  requestHandlerTimeoutSecs: 45, // short per-request cap
-  maxRequestsPerCrawl: resultsWanted + 50,
-  // keep memory/CPU in check; the pool will throttle if overloaded
+  // Keep the pool hot; autoscaled pool will back off if truly overloaded
+  minConcurrency: 8,
+  maxConcurrency: 12,
+  requestHandlerTimeoutSecs: 60,
+  maxRequestsPerCrawl: resultsWanted + 80,
   failedRequestHandler: async ({ request, error }: any) => {
     const msg = error && typeof error === 'object' && 'message' in error ? String((error as any).message) : '';
-    console.error(`Request failed: ${request.url} ${msg ? `- ${msg}` : ''}`);
+    log.error(`Request failed: ${request.url} ${msg ? `- ${msg}` : ''}`);
   },
 });
 
@@ -417,5 +388,4 @@ log.info(`Search URL: ${searchUrl}`);
 await crawler.run([{ url: searchUrl, label: 'LIST' }]);
 
 log.info(`Scraping completed. Collected ${collected} job listing(s).`);
-
 await Actor.exit();
