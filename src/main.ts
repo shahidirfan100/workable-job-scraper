@@ -39,8 +39,9 @@ async function collectViewLinksDeep(page: Page): Promise<string[]> {
     const addLinks = (root: Document | ShadowRoot) => {
       root.querySelectorAll?.('a[href^="/view/"]').forEach((a) => {
         try {
-          const href = (a as HTMLAnchorElement).href || (a as HTMLAnchorElement).getAttribute('href')!;
-          if (href) out.add(new URL(href, location.origin).href);
+          const hrefAttr = (a as HTMLAnchorElement).getAttribute('href');
+          const absolute = (a as HTMLAnchorElement).href || (hrefAttr ? new URL(hrefAttr, location.origin).href : '');
+          if (absolute) out.add(absolute);
         } catch {}
       });
     };
@@ -50,13 +51,15 @@ async function collectViewLinksDeep(page: Page): Promise<string[]> {
       const walker = document.createTreeWalker(root as any, NodeFilter.SHOW_ELEMENT);
       let node = walker.currentNode as Element | null;
       while (node) {
-        const sr = (node as any).shadowRoot as ShadowRoot | null;
+        // @ts-expect-error shadowRoot exists at runtime
+        const sr = (node as any).shadowRoot as ShadowRoot | null | undefined;
         if (sr) {
           addLinks(sr);
           const innerWalker = document.createTreeWalker(sr as any, NodeFilter.SHOW_ELEMENT);
           let inner = innerWalker.currentNode as Element | null;
           while (inner) {
-            const innerSr = (inner as any).shadowRoot as ShadowRoot | null;
+            // @ts-expect-error shadowRoot exists at runtime
+            const innerSr = (inner as any).shadowRoot as ShadowRoot | null | undefined;
             if (innerSr) addLinks(innerSr);
             inner = innerWalker.nextNode() as Element | null;
           }
@@ -131,7 +134,7 @@ async function parseJobPostingJSONLD(page: Page): Promise<Partial<JobPosting> | 
 
   for (const blob of blobs) {
     try {
-      const parsed = JSON.parse(blob);
+      const parsed = JSON.parse(blob as string);
       const pick = (obj: any): any => {
         if (!obj) return null;
         if (Array.isArray(obj)) return obj.find((o) => o && (o['@type'] === 'JobPosting' || o.title)) || null;
@@ -155,7 +158,7 @@ function extractLocationFromLD(job: Partial<JobPosting> | null): string | null {
   if (!job?.jobLocation) return null;
   const locs = Array.isArray(job.jobLocation) ? job.jobLocation : [job.jobLocation];
   const first = locs.find(Boolean) as any;
-  const addr = first?.address || first;
+  const addr = (first && (first.address || first)) || null;
   if (!addr) return null;
   const parts = [addr.addressLocality, addr.addressRegion, addr.addressCountry].filter(Boolean);
   return parts.length ? parts.join(', ') : null;
@@ -189,14 +192,16 @@ async function getInnerHTMLDeep(page: Page, selectors: string[]): Promise<string
       const tw = document.createTreeWalker(root as any, NodeFilter.SHOW_ELEMENT);
       let node = tw.currentNode as Element | null;
       while (node) {
-        const sr = (node as any).shadowRoot as ShadowRoot | null;
+        // @ts-expect-error shadowRoot exists at runtime
+        const sr = (node as any).shadowRoot as ShadowRoot | null | undefined;
         if (sr) {
           const got = tryIn(sr);
           if (got) return got;
           const innerTw = document.createTreeWalker(sr as any, NodeFilter.SHOW_ELEMENT);
           let inner = innerTw.currentNode as Element | null;
           while (inner) {
-            const innerSr = (inner as any).shadowRoot as ShadowRoot | null;
+            // @ts-expect-error shadowRoot exists at runtime
+            const innerSr = (inner as any).shadowRoot as ShadowRoot | null | undefined;
             if (innerSr) {
               const got2 = tryIn(innerSr);
               if (got2) return got2;
@@ -398,58 +403,65 @@ router.addHandler('DETAIL', async ({ page, request, log }) => {
   const ld = await parseJobPostingJSONLD(page);
 
   const title =
-    ld?.title ?? (await page.locator('h1, h2').first().textContent().catch(() => ''))?.trim() ?? '';
+    (ld?.title ?? (await page.locator('h1, h2').first().textContent().catch(() => null)) ?? '')
+      .toString()
+      .trim() || null;
 
   const datePosted = ld?.datePosted ?? null;
 
   // Company
-  let company =
+  const companyFromDom =
+    (await page
+      .locator('[data-ui="company-name"], [data-testid="company-name"], a[href*="/company/"]')
+      .first()
+      .textContent()
+      .catch(() => null)) ?? '';
+  const company =
     extractCompanyFromLD(ld) ??
-    (
-      await page
-        .locator('[data-ui="company-name"], [data-testid="company-name"], a[href*="/company/"]')
-        .first()
-        .textContent()
-        .catch(() => '')
-    )?.trim() ??
-    '';
+    (companyFromDom ? companyFromDom.toString().trim() : null);
 
   // Location
-  let locationText =
+  const locationDomText =
+    (await page
+      .locator('[data-ui="job-location"], [data-testid="job-location"], [data-ui="location"], header a[href*="/search/"]')
+      .first()
+      .textContent()
+      .catch(() => null)) ?? '';
+  const locationText =
     extractLocationFromLD(ld) ??
-    (
-      await page
-        .locator('[data-ui="job-location"], [data-testid="job-location"], [data-ui="location"], header a[href*="/search/"]')
-        .first()
-        .textContent()
-        .catch(() => '')
-    )?.trim() ??
-    '';
+    (locationDomText ? locationDomText.toString().trim() : null);
 
   // Employment type / Job type
-  let employmentType =
+  const employmentType =
     normalizeEmploymentType(ld?.employmentType ?? null) ??
     (await guessEmploymentTypeFromDOM(page));
 
   // HTML Description (prefer LD if it’s HTML, else DOM-shadow fallback)
+  const ldDescription = (ld?.description ?? '') as string;
   let descriptionHtml: string;
-  if (ld?.description && /<\w+/.test(ld.description)) {
-    descriptionHtml = ld.description;
+  if (/<\w+/.test(ldDescription || '')) {
+    descriptionHtml = ldDescription;
   } else {
-    descriptionHtml =
-      (await getInnerHTMLDeep(page, [
-        '[data-ui="job-description"]',
-        '[data-ui="description"]',
-        'article',
-      ])) ||
-      (`<p>${(await page.locator('article').first().textContent().catch(() => '')).trim()}</p>`);
+    const deep = await getInnerHTMLDeep(page, [
+      '[data-ui="job-description"]',
+      '[data-ui="description"]',
+      'article',
+    ]);
+    if (deep && deep.trim()) {
+      descriptionHtml = deep;
+    } else {
+      const txt = (await page.locator('article').first().textContent().catch(() => '')) ?? '';
+      descriptionHtml = `<p>${txt.toString().trim()}</p>`;
+    }
   }
 
-  const validThrough = ld?.validThrough ?? null;
-  const externalId =
-    (ld && Array.isArray(ld.identifier)
-      ? ld.identifier[0]?.value
-      : (ld?.identifier as { value?: string })?.value) ?? null;
+  const validThrough = (ld && (ld as any).validThrough) ? (ld as any).validThrough as string : null;
+  const externalId = (() => {
+    const id = ld && (ld as any).identifier;
+    if (!id) return null;
+    if (Array.isArray(id)) return (id[0] && id[0].value) ? id[0].value as string : null;
+    return (id.value ?? null) as string | null;
+  })();
 
   const item = {
     url: request.url,
