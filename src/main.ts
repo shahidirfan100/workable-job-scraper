@@ -6,7 +6,7 @@ import type { Page } from 'playwright';
  * Workable Scraper – fast & parallel (Crawlee 3.15)
  * - JSON-LD first, DOM/shadow fallbacks
  * - Bulk enqueue, high concurrency
- * - No CDP, no networkidle, short waits
+ * - Short waits (no CDP, no networkidle)
  ********************/
 
 await Actor.init();
@@ -131,7 +131,7 @@ function normalizeEmploymentType(et?: string | string[] | null): string | null {
 }
 function extractLocationFromLD(job: Partial<JobPosting> | null): string | null {
   if (!job?.jobLocation) return null;
-  const locs = Array.isArray(job?.jobLocation) ? job!.jobLocation : [job!.jobLocation];
+  const locs = Array.isArray(job.jobLocation) ? job.jobLocation : [job.jobLocation];
   const first = locs.find(Boolean) as any;
   const addr = (first && (first.address || first)) || null;
   if (!addr) return null;
@@ -149,40 +149,51 @@ async function guessEmploymentTypeFromDOM(page: Page): Promise<string | null> {
   const found = tokens.filter((t) => new RegExp(`\\b${t.replace('-', '[- ]?')}\\b`, 'i').test(text));
   return found.length ? Array.from(new Set(found)).join(', ') : null;
 }
-async function getInnerHTMLDeep(page: Page, selectors: string[]): Promise<string> {
-  return await page.evaluate((sels) => {
+
+// Robust description HTML (document, shadow, iframes). ***No TS arity errors***
+async function getDescriptionHtml(page: Page): Promise<string> {
+  return await page.evaluate(() => {
     const pickHtml = (el: Element | null | undefined) => (el ? (el as HTMLElement).innerHTML : '');
-    const tryIn = (root: Document | ShadowRoot): string | null => {
-      for (const sel of sels) {
+
+    const selectors = ['[data-ui="job-description"]', '[data-ui="description"]', 'article'];
+
+    const trySelect = (root: Document | ShadowRoot): string | null => {
+      for (const sel of selectors) {
         const el = root.querySelector(sel);
         if (el) return pickHtml(el);
       }
       return null;
     };
-    let html = tryIn(document);
+
+    // Try main document
+    let html = trySelect(document);
     if (html) return html;
 
+    // Walk shadow roots
     const tw = document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT);
     let node = tw.currentNode as Element | null;
     while (node) {
       const sr = (node as any).shadowRoot as ShadowRoot | null | undefined;
       if (sr) {
-        const got = tryIn(sr, sels);
+        const got = trySelect(sr);
         if (got) return got;
       }
       node = tw.nextNode() as Element | null;
     }
+
+    // Same-origin iframes
     for (const ifr of Array.from(document.querySelectorAll('iframe'))) {
       try {
         const doc = (ifr as HTMLIFrameElement).contentDocument;
         if (doc) {
-          const attempt = tryIn(doc, sels);
-          if (attempt) return attempt;
+          const got = trySelect(doc);
+          if (got) return got;
         }
       } catch {}
     }
+
     return '';
-  }, selectors);
+  });
 }
 
 // -----------------------
@@ -240,7 +251,7 @@ router.addHandler('LIST', async ({ page, request, log, crawler }) => {
     throw err;
   });
 
-  // Tight scroll loop (<= 10 passes), cheap counting
+  // Tight scroll loop (≤ 10 passes), cheap counting
   const target = Math.min(resultsWanted, 120);
   let lastCount = 0;
   for (let i = 0; i < 10; i++) {
@@ -323,7 +334,7 @@ router.addHandler('DETAIL', async ({ page, request, log }) => {
   const ldDesc = (ld?.description ?? '') as string;
   const descriptionHtml =
     (/<\w+/.test(ldDesc) && ldDesc) ||
-    (await getInnerHTMLDeep(page, ['[data-ui="job-description"]', '[data-ui="description"]', 'article'])) ||
+    (await getDescriptionHtml(page)) ||
     `<p>${(articleText ?? '').toString().trim()}</p>`;
 
   const externalId = (() => {
@@ -371,8 +382,8 @@ const crawler = new PlaywrightCrawler({
   maxConcurrency: 12,
   requestHandlerTimeoutSecs: 45, // short per-request cap so slow pages don't block
   maxRequestsPerCrawl: resultsWanted + 80,
-  failedRequestHandler: async ({ request, error }: any) => {
-    const msg = error && typeof error === 'object' && 'message' in error ? String((error as any).message) : '';
+  failedRequestHandler: async ({ request, error }) => {
+    const msg = error instanceof Error ? error.message : '';
     log.error(`Request failed: ${request.url} ${msg ? `- ${msg}` : ''}`);
   },
 });
