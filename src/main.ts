@@ -445,11 +445,11 @@ router.addHandler('DETAIL', async ({ page, request, log }) => {
       (`<p>${(await page.locator('article').first().textContent().catch(() => '')).trim()}</p>`);
   }
 
-  const validThrough = (ld as any)?.validThrough ?? null;
+  const validThrough = ld?.validThrough ?? null;
   const externalId =
-    (Array.isArray((ld as any)?.identifier)
-      ? (ld as any).identifier[0]?.value
-      : (ld as any)?.identifier?.value) ?? null;
+    (ld && Array.isArray(ld.identifier)
+      ? ld.identifier[0]?.value
+      : (ld?.identifier as { value?: string })?.value) ?? null;
 
   const item = {
     url: request.url,
