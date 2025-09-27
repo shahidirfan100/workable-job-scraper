@@ -1,21 +1,22 @@
-import { Actor, log, KeyValueStore } from 'apify';
+import { Actor, KeyValueStore } from 'apify';
 import { PlaywrightCrawler, Dataset, createPlaywrightRouter } from 'crawlee';
 import type { Page } from 'playwright';
 
 /********************
- * Workable Scraper – Single-file main.ts
- * - Robust against SPA + Shadow DOM
- * - JSON-LD first (JobPosting), DOM/shadow fallbacks
- * - Anti-bot hardening (UA, headers, timezone)
+ * Workable Scraper – Perf-optimized main.ts
+ * - JSON-LD first on detail pages
+ * - Shadow DOM aware fallbacks
+ * - Faster nav (no networkidle), shorter waits
+ * - Concurrency up to 6
  ********************/
 
 await Actor.init();
 
 interface InputSchema {
   keyword: string;
-  location?: string; // optional slug like `united-states-of-america` or city slug
+  location?: string;
   postedDate?: '24h' | '7d' | '30d' | 'anytime';
-  resultsWanted?: number; // number of detail pages to save
+  resultsWanted?: number;
 }
 
 const input = (await Actor.getInput<InputSchema>()) ?? {
@@ -31,7 +32,6 @@ const resultsWanted = Math.max(1, Math.min(500, input.resultsWanted ?? 50));
 // -----------------------
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-// Traverse document + shadow roots + iframes to grab links to /view/
 async function collectViewLinksDeep(page: Page): Promise<string[]> {
   return await page.evaluate(() => {
     const out = new Set<string>();
@@ -80,15 +80,6 @@ async function collectViewLinksDeep(page: Page): Promise<string[]> {
   });
 }
 
-async function humanize(page: Page) {
-  try {
-    await page.mouse.move(100 + Math.random() * 200, 120 + Math.random() * 120, { steps: 10 });
-    await sleep(100 + Math.random() * 200);
-    await page.evaluate(() => window.scrollBy(0, 200 + Math.random() * 300));
-    await sleep(120 + Math.random() * 240);
-  } catch {}
-}
-
 function buildSearchUrl(): string {
   const params = new URLSearchParams({ query: input.keyword });
   if (input.postedDate && input.postedDate !== 'anytime') {
@@ -109,7 +100,7 @@ function buildSearchUrl(): string {
   return `${base}?${params.toString()}`;
 }
 
-// ---- JSON-LD parser (JobPosting) ----
+// ---- JSON-LD helpers ----
 type JobPosting = {
   '@type'?: string;
   title?: string;
@@ -129,7 +120,6 @@ async function parseJobPostingJSONLD(page: Page): Promise<Partial<JobPosting> | 
   const blobs = await page.$$eval('script[type="application/ld+json"]', (nodes) =>
     nodes.map((n) => n.textContent || '').filter(Boolean),
   );
-
   for (const blob of blobs) {
     try {
       const parsed = JSON.parse(blob as string);
@@ -151,7 +141,6 @@ function normalizeEmploymentType(et?: string | string[] | null): string | null {
   if (!et) return null;
   return Array.isArray(et) ? Array.from(new Set(et)).join(', ') : et;
 }
-
 function extractLocationFromLD(job: Partial<JobPosting> | null): string | null {
   if (!job?.jobLocation) return null;
   const locs = Array.isArray(job.jobLocation) ? job.jobLocation : [job.jobLocation];
@@ -161,18 +150,14 @@ function extractLocationFromLD(job: Partial<JobPosting> | null): string | null {
   const parts = [addr.addressLocality, addr.addressRegion, addr.addressCountry].filter(Boolean);
   return parts.length ? parts.join(', ') : null;
 }
-
 function extractCompanyFromLD(job: Partial<JobPosting> | null): string | null {
   if (!job?.hiringOrganization) return null;
   const org = Array.isArray(job.hiringOrganization) ? job.hiringOrganization[0] : job.hiringOrganization;
   return (org as any)?.name || null;
 }
-
-// Shadow-aware HTML picker (for description fallback)
 async function getInnerHTMLDeep(page: Page, selectors: string[]): Promise<string> {
   return await page.evaluate((sels) => {
     const pickHtml = (el: Element | null | undefined) => (el ? (el as HTMLElement).innerHTML : '');
-
     const tryIn = (root: Document | ShadowRoot): string | null => {
       for (const sel of sels) {
         const el = root.querySelector(sel);
@@ -180,12 +165,8 @@ async function getInnerHTMLDeep(page: Page, selectors: string[]): Promise<string
       }
       return null;
     };
-
-    // document first
     let html = tryIn(document);
     if (html) return html;
-
-    // walk shadow roots
     const walk = (root: Document | ShadowRoot): string | null => {
       const tw = document.createTreeWalker(root as any, NodeFilter.SHOW_ELEMENT);
       let node = tw.currentNode as Element | null;
@@ -209,11 +190,8 @@ async function getInnerHTMLDeep(page: Page, selectors: string[]): Promise<string
       }
       return null;
     };
-
     html = walk(document);
     if (html) return html;
-
-    // last resort: same-origin iframes
     for (const ifr of Array.from(document.querySelectorAll('iframe'))) {
       try {
         const doc = (ifr as HTMLIFrameElement).contentDocument;
@@ -226,8 +204,6 @@ async function getInnerHTMLDeep(page: Page, selectors: string[]): Promise<string
     return '';
   }, selectors);
 }
-
-// Text fallback for job type if LD missing (looks for common tokens)
 async function guessEmploymentTypeFromDOM(page: Page): Promise<string | null> {
   const text = await page.evaluate(() => document.body?.innerText || '');
   const tokens = ['Full-time', 'Part-time', 'Contract', 'Temporary', 'Internship', 'Apprenticeship', 'Freelance'];
@@ -235,55 +211,22 @@ async function guessEmploymentTypeFromDOM(page: Page): Promise<string | null> {
   return found.length ? Array.from(new Set(found)).join(', ') : null;
 }
 
+// -----------------------
+// Router
+// -----------------------
 let collected = 0;
 const seenUrls = new Set<string>();
-
 const router = createPlaywrightRouter();
 
 router.addHandler('LIST', async ({ page, request, log, crawler }) => {
   log.info(`Processing list page: ${request.url}`);
 
-  // Only abort heavy media. DO NOT block CSS or fonts.
-  await page.route('**/*', (route) => {
-    const url = route.request().url();
-    if (/\.(?:png|jpg|jpeg|gif|webp|ico|mp4|webm)(?:\?|$)/i.test(url)) return route.abort();
-    return route.continue();
-  });
-
   await page.setViewportSize({ width: 1440, height: 900 });
 
-  // Anti-bot hints before any site JS runs
-  await page.addInitScript(() => {
-    try {
-      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] as any });
-      Object.defineProperty(Notification, 'permission', { get: () => 'denied' as any });
-    } catch {}
-  });
+  // Use fast wait (no networkidle)
+  await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 45_000 });
 
-  // Set UA, headers, timezone; Chromium-only CDP
-  try {
-    const cdp = await page.context().newCDPSession(page);
-    await cdp.send('Network.setUserAgentOverride', {
-      userAgent:
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    });
-    await cdp.send('Network.setExtraHTTPHeaders', {
-      headers: {
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Sec-CH-UA': '"Chromium";v="120", "Not=A?Brand";v="99", "Google Chrome";v="120"',
-        'Sec-CH-UA-Platform': '"Windows"',
-        'Sec-CH-UA-Mobile': '?0',
-      },
-    });
-    await cdp.send('Emulation.setTimezoneOverride', { timezoneId: 'Europe/London' });
-  } catch {}
-
-  await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 90_000 });
-  await page.waitForLoadState('networkidle').catch(() => void 0);
-
-  // Cookie banners
+  // Cookie banner (fast)
   const cookieButtons = [
     'button:has-text("Accept all")',
     'button:has-text("Accept All")',
@@ -293,50 +236,43 @@ router.addHandler('LIST', async ({ page, request, log, crawler }) => {
   for (const sel of cookieButtons) {
     const btn = page.locator(sel).first();
     if (await btn.count()) {
-      await btn.click({ timeout: 5_000 }).catch(() => void 0);
+      await btn.click({ timeout: 3_000 }).catch(() => void 0);
       log.info('Cookie banner handled.');
       break;
     }
   }
 
-  await humanize(page);
-
   const cardSelector =
     '[data-ui="job-card"], [data-testid="job-card"], li[data-ui="job-card"], div[data-ui="job-card"]';
 
-  // Wait for any evidence of results
-  try {
-    await Promise.race([
-      page.waitForSelector(cardSelector, { timeout: 60_000, state: 'attached' }),
-      page.waitForSelector('a[href^="/view/"]', { timeout: 60_000, state: 'attached' }),
-    ]);
-  } catch (err) {
-    log.warning('Job cards/links not found within timeout. Saving HTML + screenshot.');
-    const html = await page.content();
-    await KeyValueStore.setValue('LIST_HTML_DEBUG', html, { contentType: 'text/html' });
-    const screenshot = await page.screenshot({ fullPage: true });
-    await KeyValueStore.setValue('LIST_SCREENSHOT_DEBUG', screenshot, { contentType: 'image/png' });
+  // Wait briefly for results
+  await Promise.race([
+    page.waitForSelector(cardSelector, { timeout: 12_000, state: 'attached' }),
+    page.waitForSelector('a[href^="/view/"]', { timeout: 12_000, state: 'attached' }),
+  ]).catch(async (err) => {
+    log.warning('Job cards/links not found quickly. Saving HTML + screenshot.');
+    await KeyValueStore.setValue('LIST_HTML_DEBUG', await page.content(), { contentType: 'text/html' });
+    await KeyValueStore.setValue('LIST_SCREENSHOT_DEBUG', await page.screenshot({ fullPage: true }), {
+      contentType: 'image/png',
+    });
     throw err;
-  }
+  });
 
-  // Real window scrolling until stable or we have enough
+  // Faster scroll loop
   let lastSeen = 0;
-  for (let i = 0; i < 40; i++) {
-    await page.evaluate(() => window.scrollBy(0, Math.max(600, Math.random() * 900)));
-    await sleep(700 + Math.floor(Math.random() * 500));
-
+  for (let i = 0; i < 18; i++) {
+    await page.evaluate(() => window.scrollBy(0, 800));
+    await sleep(250 + Math.floor(Math.random() * 200));
     const [cardCount, linkCount] = await Promise.all([
       page.locator(cardSelector).count().catch(() => 0),
       page.locator('a[href^="/view/"]').count().catch(() => 0),
     ]);
     const deepCount = (await collectViewLinksDeep(page)).length;
     const seen = Math.max(cardCount, linkCount, deepCount);
-
     if (seen >= resultsWanted || seen === lastSeen) break;
     lastSeen = seen;
   }
 
-  // Collect links from main DOM + shadows + iframes
   const mainLinks: string[] = (await page
     .$$eval('a[href^="/view/"]', (as) =>
       Array.from(new Set(as.map((a) => new URL((a as HTMLAnchorElement).href, location.origin).href))),
@@ -347,10 +283,10 @@ router.addHandler('LIST', async ({ page, request, log, crawler }) => {
 
   if (!links.length) {
     log.warning('No detail links found after scroll. Saving artifacts.');
-    const html = await page.content();
-    await KeyValueStore.setValue('LIST_HTML_DEBUG_EMPTY', html, { contentType: 'text/html' });
-    const screenshot = await page.screenshot({ fullPage: true });
-    await KeyValueStore.setValue('LIST_SCREENSHOT_DEBUG_EMPTY', screenshot, { contentType: 'image/png' });
+    await KeyValueStore.setValue('LIST_HTML_DEBUG_EMPTY', await page.content(), { contentType: 'text/html' });
+    await KeyValueStore.setValue('LIST_SCREENSHOT_DEBUG_EMPTY', await page.screenshot({ fullPage: true }), {
+      contentType: 'image/png',
+    });
   }
 
   let enqueued = 0;
@@ -365,37 +301,11 @@ router.addHandler('LIST', async ({ page, request, log, crawler }) => {
 });
 
 router.addHandler('DETAIL', async ({ page, request, log }) => {
-  log.info(`Detail: ${request.url}`);
-
-  // Keep media abort, allow CSS/fonts
-  await page.route('**/*', (route) => {
-    const url = route.request().url();
-    if (/\.(?:png|jpg|jpeg|gif|webp|ico|mp4|webm)(?:\?|$)/i.test(url)) return route.abort();
-    return route.continue();
-  });
-
+  // Fast nav
   await page.setViewportSize({ width: 1440, height: 900 });
-  try {
-    const cdp = await page.context().newCDPSession(page);
-    await cdp.send('Network.setUserAgentOverride', {
-      userAgent:
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    });
-    await cdp.send('Network.setExtraHTTPHeaders', {
-      headers: {
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Sec-CH-UA': '"Chromium";v="120", "Not=A?Brand";v="99", "Google Chrome";v="120"',
-        'Sec-CH-UA-Platform': '"Windows"',
-        'Sec-CH-UA-Mobile': '?0',
-      },
-    });
-    await cdp.send('Emulation.setTimezoneOverride', { timezoneId: 'Europe/London' });
-  } catch {}
+  await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 45_000 });
 
-  await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 90_000 });
-  await page.waitForLoadState('networkidle').catch(() => void 0);
-
-  // --- Extraction with JSON-LD first + DOM/shadow fallbacks ---
+  // --- JSON-LD first ---
   const ld = await parseJobPostingJSONLD(page);
 
   const title =
@@ -403,82 +313,88 @@ router.addHandler('DETAIL', async ({ page, request, log }) => {
       .toString()
       .trim() || null;
 
-  const datePosted = ld?.datePosted ?? null;
-
-  // Company
-  const companyFromDom =
+  const companyDom =
     (await page
       .locator('[data-ui="company-name"], [data-testid="company-name"], a[href*="/company/"]')
       .first()
       .textContent()
       .catch(() => null)) ?? '';
-  const company =
-    extractCompanyFromLD(ld) ??
-    (companyFromDom ? companyFromDom.toString().trim() : null);
 
-  // Location
-  const locationDomText =
+  const company = extractCompanyFromLD(ld) ?? (companyDom ? companyDom.toString().trim() : null);
+
+  const locDom =
     (await page
       .locator('[data-ui="job-location"], [data-testid="job-location"], [data-ui="location"], header a[href*="/search/"]')
       .first()
       .textContent()
       .catch(() => null)) ?? '';
-  const locationText =
-    extractLocationFromLD(ld) ??
-    (locationDomText ? locationDomText.toString().trim() : null);
+  const locationText = extractLocationFromLD(ld) ?? (locDom ? locDom.toString().trim() : null);
 
-  // Employment type / Job type
-  const employmentType =
-    normalizeEmploymentType(ld?.employmentType ?? null) ??
-    (await guessEmploymentTypeFromDOM(page));
+  const employmentType = normalizeEmploymentType(ld?.employmentType ?? null) ?? (await guessEmploymentTypeFromDOM(page));
 
-  // HTML Description (prefer LD if it’s HTML, else DOM-shadow fallback)
-  const ldDescription = (ld?.description ?? '') as string;
-  let descriptionHtml: string;
-  if (/<\w+/.test(ldDescription || '')) {
-    descriptionHtml = ldDescription;
-  } else {
-    const deep = await getInnerHTMLDeep(page, [
-      '[data-ui="job-description"]',
-      '[data-ui="description"]',
-      'article',
-    ]);
-    if (deep && deep.trim()) {
-      descriptionHtml = deep;
-    } else {
-      const txt = (await page.locator('article').first().textContent().catch(() => '')) ?? '';
-      descriptionHtml = `<p>${txt.toString().trim()}</p>`;
-    }
-  }
-
-  const validThrough = (ld && (ld as any).validThrough) ? (ld as any).validThrough as string : null;
-  const externalId = (() => {
-    const id = ld && (ld as any).identifier;
-    if (!id) return null;
-    if (Array.isArray(id)) return (id[0] && id[0].value) ? id[0].value as string : null;
-    return (id.value ?? null) as string | null;
-  })();
+  const ldDesc = (ld?.description ?? '') as string;
+  const descriptionHtml =
+    (/<\w+/.test(ldDesc) && ldDesc) ||
+    (await getInnerHTMLDeep(page, ['[data-ui="job-description"]', '[data-ui="description"]', 'article'])) ||
+    `<p>${((await page.locator('article').first().textContent().catch(() => '')) ?? '').toString().trim()}</p>`;
 
   const item = {
     url: request.url,
     title,
     company,
     location: locationText,
-    datePosted,
+    datePosted: ld?.datePosted ?? null,
     employmentType: employmentType ?? null,
-    validThrough,
-    externalId,
+    validThrough: (ld as any)?.validThrough ?? null,
+    externalId: (() => {
+      const id = (ld as any)?.identifier;
+      if (!id) return null;
+      if (Array.isArray(id)) return (id[0] && id[0].value) ? id[0].value as string : null;
+      return (id.value ?? null) as string | null;
+    })(),
     descriptionHtml,
     scrapedAt: new Date().toISOString(),
   };
 
   await Dataset.pushData(item);
-  collected++;
-  log.info(`Saved job (${collected}/${resultsWanted}).`);
 });
 
+// -----------------------
+// Crawler
+// -----------------------
 const crawler = new PlaywrightCrawler({
   requestHandler: router,
+  // Set these once so we don't repeat overhead in handlers
+  prePageCreateHooks: [
+    async ({ pageOptions }) => {
+      // nothing here for now; could add context-level defaults if needed
+      return pageOptions;
+    },
+  ],
+  preNavigationHooks: [
+    async ({ page }) => {
+      // lightweight anti-bot setup without heavy CDP each time
+      await page.addInitScript(() => {
+        try {
+          Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+          Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+          Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] as any });
+          Object.defineProperty(Notification, 'permission', { get: () => 'denied' as any });
+        } catch {}
+      });
+      // block only heavy media once per page
+      await page.route('**/*', (route) => {
+        const url = route.request().url();
+        if (/\.(?:png|jpg|jpeg|gif|webp|ico|mp4|webm)(?:\?|$)/i.test(url)) return route.abort();
+        return route.continue();
+      });
+      // quick headers (no CDP)
+      await page.setExtraHTTPHeaders({
+        'Accept-Language': 'en-US,en;q=0.9',
+      });
+      await page.setViewportSize({ width: 1440, height: 900 });
+    },
+  ],
   launchContext: {
     launchOptions: {
       headless: true,
@@ -490,19 +406,19 @@ const crawler = new PlaywrightCrawler({
       ],
     },
   },
-  maxConcurrency: 2,
-  requestHandlerTimeoutSecs: 120,
+  maxConcurrency: 6,                 // was 2
+  requestHandlerTimeoutSecs: 60,     // was 120
   maxRequestsPerCrawl: resultsWanted + 50,
-  failedRequestHandler: async ({ request }) => {
-    log.error(`Request failed too many times: ${request.url}`);
+  failedRequestHandler: async ({ request, error }) => {
+    console.error(`Request failed: ${request.url}`, error?.message);
   },
 });
 
 const searchUrl = buildSearchUrl();
-log.info(`Search URL: ${searchUrl}`);
+console.info(`Search URL: ${searchUrl}`);
 
 await crawler.run([{ url: searchUrl, label: 'LIST' }]);
 
-log.info(`Scraping completed. Collected ${collected} job listing(s).`);
+console.info(`Scraping completed. Requested ~${resultsWanted} details.`);
 
 await Actor.exit();
