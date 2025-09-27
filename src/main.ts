@@ -51,14 +51,12 @@ async function collectViewLinksDeep(page: Page): Promise<string[]> {
       const walker = document.createTreeWalker(root as any, NodeFilter.SHOW_ELEMENT);
       let node = walker.currentNode as Element | null;
       while (node) {
-        // @ts-expect-error shadowRoot exists at runtime
         const sr = (node as any).shadowRoot as ShadowRoot | null | undefined;
         if (sr) {
           addLinks(sr);
           const innerWalker = document.createTreeWalker(sr as any, NodeFilter.SHOW_ELEMENT);
           let inner = innerWalker.currentNode as Element | null;
           while (inner) {
-            // @ts-expect-error shadowRoot exists at runtime
             const innerSr = (inner as any).shadowRoot as ShadowRoot | null | undefined;
             if (innerSr) addLinks(innerSr);
             inner = innerWalker.nextNode() as Element | null;
@@ -192,7 +190,6 @@ async function getInnerHTMLDeep(page: Page, selectors: string[]): Promise<string
       const tw = document.createTreeWalker(root as any, NodeFilter.SHOW_ELEMENT);
       let node = tw.currentNode as Element | null;
       while (node) {
-        // @ts-expect-error shadowRoot exists at runtime
         const sr = (node as any).shadowRoot as ShadowRoot | null | undefined;
         if (sr) {
           const got = tryIn(sr);
@@ -200,7 +197,6 @@ async function getInnerHTMLDeep(page: Page, selectors: string[]): Promise<string
           const innerTw = document.createTreeWalker(sr as any, NodeFilter.SHOW_ELEMENT);
           let inner = innerTw.currentNode as Element | null;
           while (inner) {
-            // @ts-expect-error shadowRoot exists at runtime
             const innerSr = (inner as any).shadowRoot as ShadowRoot | null | undefined;
             if (innerSr) {
               const got2 = tryIn(innerSr);
