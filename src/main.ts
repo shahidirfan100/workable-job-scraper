@@ -3,11 +3,10 @@ import { PlaywrightCrawler, Dataset, createPlaywrightRouter } from 'crawlee';
 import type { Page } from 'playwright';
 
 /********************
- * Workable Scraper – Single-file main.ts (Crawlee 3.15-safe)
- * - JSON-LD first on detail pages
- * - Shadow DOM aware fallbacks
- * - Faster nav (no networkidle), shorter waits
- * - Concurrency up to 6
+ * Workable Scraper – fast & robust (Crawlee 3.15)
+ * - JSON-LD first, DOM/shadow fallbacks
+ * - No networkidle, no CDP per page
+ * - Short waits, tight scroll loop, higher concurrency
  ********************/
 
 await Actor.init();
@@ -31,6 +30,26 @@ const resultsWanted = Math.max(1, Math.min(500, input.resultsWanted ?? 50));
 // Helpers
 // -----------------------
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function buildSearchUrl(): string {
+  const params = new URLSearchParams({ query: input.keyword });
+  if (input.postedDate && input.postedDate !== 'anytime') {
+    const map: Record<NonNullable<InputSchema['postedDate']>, string> = {
+      '24h': '1',
+      '7d': '7',
+      '30d': '30',
+      anytime: '',
+    };
+    const dayRange = map[input.postedDate];
+    if (dayRange) params.set('day_range', dayRange);
+  }
+  let base = 'https://jobs.workable.com/search';
+  if (input.location) {
+    const looksSlug = /^(?:[a-z0-9-]+)(?:\/[a-z0-9-]+)?$/.test(input.location);
+    if (looksSlug) base = `https://jobs.workable.com/search/${input.location}`;
+  }
+  return `${base}?${params.toString()}`;
+}
 
 // Traverse document + shadow roots + iframes to grab links to /view/
 async function collectViewLinksDeep(page: Page): Promise<string[]> {
@@ -79,26 +98,6 @@ async function collectViewLinksDeep(page: Page): Promise<string[]> {
 
     return Array.from(out);
   });
-}
-
-function buildSearchUrl(): string {
-  const params = new URLSearchParams({ query: input.keyword });
-  if (input.postedDate && input.postedDate !== 'anytime') {
-    const map: Record<NonNullable<InputSchema['postedDate']>, string> = {
-      '24h': '1',
-      '7d': '7',
-      '30d': '30',
-      anytime: '',
-    };
-    const dayRange = map[input.postedDate];
-    if (dayRange) params.set('day_range', dayRange);
-  }
-  let base = 'https://jobs.workable.com/search';
-  if (input.location) {
-    const looksSlug = /^(?:[a-z0-9-]+)(?:\/[a-z0-9-]+)?$/.test(input.location);
-    if (looksSlug) base = `https://jobs.workable.com/search/${input.location}`;
-  }
-  return `${base}?${params.toString()}`;
 }
 
 // ---- JSON-LD helpers ----
@@ -156,6 +155,12 @@ function extractCompanyFromLD(job: Partial<JobPosting> | null): string | null {
   const org = Array.isArray(job.hiringOrganization) ? job.hiringOrganization[0] : job.hiringOrganization;
   return (org as any)?.name || null;
 }
+async function guessEmploymentTypeFromDOM(page: Page): Promise<string | null> {
+  const text = await page.evaluate(() => document.body?.innerText || '');
+  const tokens = ['Full-time', 'Part-time', 'Contract', 'Temporary', 'Internship', 'Apprenticeship', 'Freelance'];
+  const found = tokens.filter((t) => new RegExp(`\\b${t.replace('-', '[- ]?')}\\b`, 'i').test(text));
+  return found.length ? Array.from(new Set(found)).join(', ') : null;
+}
 async function getInnerHTMLDeep(page: Page, selectors: string[]): Promise<string> {
   return await page.evaluate((sels) => {
     const pickHtml = (el: Element | null | undefined) => (el ? (el as HTMLElement).innerHTML : '');
@@ -205,12 +210,6 @@ async function getInnerHTMLDeep(page: Page, selectors: string[]): Promise<string
     return '';
   }, selectors);
 }
-async function guessEmploymentTypeFromDOM(page: Page): Promise<string | null> {
-  const text = await page.evaluate(() => document.body?.innerText || '');
-  const tokens = ['Full-time', 'Part-time', 'Contract', 'Temporary', 'Internship', 'Apprenticeship', 'Freelance'];
-  const found = tokens.filter((t) => new RegExp(`\\b${t.replace('-', '[- ]?')}\\b`, 'i').test(text));
-  return found.length ? Array.from(new Set(found)).join(', ') : null;
-}
 
 // -----------------------
 // Router
@@ -222,27 +221,25 @@ const router = createPlaywrightRouter();
 router.addHandler('LIST', async ({ page, request, log, crawler }) => {
   log.info(`Processing list page: ${request.url}`);
 
-  await page.setViewportSize({ width: 1440, height: 900 });
-
-  // Block heavy media only (keep CSS/fonts)
+  // Allow CSS/fonts, block heavy media
   await page.route('**/*', (route) => {
     const url = route.request().url();
     if (/\.(?:png|jpg|jpeg|gif|webp|ico|mp4|webm)(?:\?|$)/i.test(url)) return route.abort();
     return route.continue();
   });
+  await page.setViewportSize({ width: 1440, height: 900 });
 
-  // Lightweight anti-bot
+  // Lightweight anti-bot only (no CDP)
   await page.addInitScript(() => {
     try {
       Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
       Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
       Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] as any });
-      Object.defineProperty(Notification, 'permission', { get: () => 'denied' as any });
     } catch {}
   });
   await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
 
-  // Fast nav (no networkidle)
+  // Fast nav
   await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 45_000 });
 
   // Cookie banner (fast)
@@ -277,12 +274,12 @@ router.addHandler('LIST', async ({ page, request, log, crawler }) => {
     throw err;
   });
 
-  // Faster scroll loop
+  // Tight scroll loop (fewer iters, smaller sleeps)
   let lastSeen = 0;
-  const maxIters = Math.min(18, Math.max(10, Math.ceil(resultsWanted / 3)));
+  const maxIters = Math.min(14, Math.max(10, Math.ceil(resultsWanted / 4)));
   for (let i = 0; i < maxIters; i++) {
-    await page.evaluate(() => window.scrollBy(0, 800));
-    await sleep(250 + Math.floor(Math.random() * 200));
+    await page.evaluate(() => window.scrollBy(0, 900));
+    await sleep(220 + Math.floor(Math.random() * 100));
     const [cardCount, linkCount] = await Promise.all([
       page.locator(cardSelector).count().catch(() => 0),
       page.locator('a[href^="/view/"]').count().catch(() => 0),
@@ -293,6 +290,7 @@ router.addHandler('LIST', async ({ page, request, log, crawler }) => {
     lastSeen = seen;
   }
 
+  // Gather detail links
   const mainLinks: string[] = (await page
     .$$eval('a[href^="/view/"]', (as) =>
       Array.from(new Set(as.map((a) => new URL((a as HTMLAnchorElement).href, location.origin).href))),
@@ -320,25 +318,27 @@ router.addHandler('LIST', async ({ page, request, log, crawler }) => {
   log.info(`Enqueued ${enqueued} detail pages (total seen: ${seenUrls.size}).`);
 });
 
-router.addHandler('DETAIL', async ({ page, request }) => {
-  // Fast nav
-  await page.setViewportSize({ width: 1440, height: 900 });
+router.addHandler('DETAIL', async ({ page, request, log }) => {
+  // Fast nav, no CDP, block only heavy media
   await page.route('**/*', (route) => {
     const url = route.request().url();
     if (/\.(?:png|jpg|jpeg|gif|webp|ico|mp4|webm)(?:\?|$)/i.test(url)) return route.abort();
     return route.continue();
   });
   await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 45_000 });
 
   // --- JSON-LD first ---
   const ld = await parseJobPostingJSONLD(page);
 
+  // Title
   const title =
     (ld?.title ?? (await page.locator('h1, h2').first().textContent().catch(() => null)) ?? '')
       .toString()
       .trim() || null;
 
+  // Company
   const companyDom =
     (await page
       .locator('[data-ui="company-name"], [data-testid="company-name"], a[href*="/company/"]')
@@ -347,6 +347,7 @@ router.addHandler('DETAIL', async ({ page, request }) => {
       .catch(() => null)) ?? '';
   const company = extractCompanyFromLD(ld) ?? (companyDom ? companyDom.toString().trim() : null);
 
+  // Location
   const locDom =
     (await page
       .locator('[data-ui="job-location"], [data-testid="job-location"], [data-ui="location"], header a[href*="/search/"]')
@@ -355,9 +356,12 @@ router.addHandler('DETAIL', async ({ page, request }) => {
       .catch(() => null)) ?? '';
   const locationText = extractLocationFromLD(ld) ?? (locDom ? locDom.toString().trim() : null);
 
+  // Job type (employmentType)
   const employmentType =
-    normalizeEmploymentType(ld?.employmentType ?? null) ?? (await guessEmploymentTypeFromDOM(page));
+    normalizeEmploymentType(ld?.employmentType ?? null) ??
+    (await guessEmploymentTypeFromDOM(page));
 
+  // Description HTML (LD if HTML, else DOM/shadow)
   const ldDesc = (ld?.description ?? '') as string;
   const descriptionHtml =
     (/<\w+/.test(ldDesc) && ldDesc) ||
@@ -390,7 +394,7 @@ router.addHandler('DETAIL', async ({ page, request }) => {
 });
 
 // -----------------------
-// Crawler (Crawlee 3.15-compatible options only)
+// Crawler
 // -----------------------
 const crawler = new PlaywrightCrawler({
   requestHandler: router,
@@ -405,8 +409,8 @@ const crawler = new PlaywrightCrawler({
       ],
     },
   },
-  maxConcurrency: 6,             // increased parallelism
-  requestHandlerTimeoutSecs: 60, // shorter per-request cap
+  maxConcurrency: 6,             // keep CPU busy; AutoscaledPool will throttle if needed
+  requestHandlerTimeoutSecs: 60, // faster per-request cap
   maxRequestsPerCrawl: resultsWanted + 50,
   failedRequestHandler: async ({ request, error }: any) => {
     const msg = error && typeof error === 'object' && 'message' in error ? String((error as any).message) : '';
