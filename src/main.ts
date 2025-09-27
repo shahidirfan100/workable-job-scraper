@@ -398,31 +398,33 @@ router.addHandler('DETAIL', async ({ page, request, log }) => {
   const ld = await parseJobPostingJSONLD(page);
 
   const title =
-    ld?.title ??
-    (await page.locator('h1, h2').first().textContent().catch(() => null))?.trim() ??
-    null;
+    ld?.title ?? (await page.locator('h1, h2').first().textContent().catch(() => ''))?.trim() ?? '';
 
   const datePosted = ld?.datePosted ?? null;
 
   // Company
   let company =
     extractCompanyFromLD(ld) ??
-    (await page
-      .locator('[data-ui="company-name"], [data-testid="company-name"], a[href*="/company/"]')
-      .first()
-      .textContent()
-      .catch(() => null))?.trim() ??
-    null;
+    (
+      await page
+        .locator('[data-ui="company-name"], [data-testid="company-name"], a[href*="/company/"]')
+        .first()
+        .textContent()
+        .catch(() => '')
+    )?.trim() ??
+    '';
 
   // Location
   let locationText =
     extractLocationFromLD(ld) ??
-    (await page
-      .locator('[data-ui="job-location"], [data-testid="job-location"], [data-ui="location"], header a[href*="/search/"]')
-      .first()
-      .textContent()
-      .catch(() => null))?.trim() ??
-    null;
+    (
+      await page
+        .locator('[data-ui="job-location"], [data-testid="job-location"], [data-ui="location"], header a[href*="/search/"]')
+        .first()
+        .textContent()
+        .catch(() => '')
+    )?.trim() ??
+    '';
 
   // Employment type / Job type
   let employmentType =
