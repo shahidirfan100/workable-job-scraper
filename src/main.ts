@@ -3,7 +3,7 @@ import { PlaywrightCrawler, Dataset, createPlaywrightRouter } from 'crawlee';
 import type { Page } from 'playwright';
 
 /********************
- * Workable Scraper – Perf-optimized main.ts
+ * Workable Scraper – Single-file main.ts (Crawlee 3.15-safe)
  * - JSON-LD first on detail pages
  * - Shadow DOM aware fallbacks
  * - Faster nav (no networkidle), shorter waits
@@ -107,10 +107,10 @@ type JobPosting = {
   description?: string;
   datePosted?: string;
   hiringOrganization?: { name?: string } | { name?: string }[];
-  jobLocation?: (
+  jobLocation?:
     | { address?: { addressLocality?: string; addressRegion?: string; addressCountry?: string } }
     | { addressLocality?: string; addressRegion?: string; addressCountry?: string }
-  ) | Array<any>;
+    | Array<any>;
   employmentType?: string | string[];
   validThrough?: string;
   identifier?: { value?: string } | { value?: string }[];
@@ -223,7 +223,25 @@ router.addHandler('LIST', async ({ page, request, log, crawler }) => {
 
   await page.setViewportSize({ width: 1440, height: 900 });
 
-  // Use fast wait (no networkidle)
+  // Block heavy media only (keep CSS/fonts)
+  await page.route('**/*', (route) => {
+    const url = route.request().url();
+    if (/\.(?:png|jpg|jpeg|gif|webp|ico|mp4|webm)(?:\?|$)/i.test(url)) return route.abort();
+    return route.continue();
+  });
+
+  // Lightweight anti-bot
+  await page.addInitScript(() => {
+    try {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] as any });
+      Object.defineProperty(Notification, 'permission', { get: () => 'denied' as any });
+    } catch {}
+  });
+  await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
+
+  // Fast nav (no networkidle)
   await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 45_000 });
 
   // Cookie banner (fast)
@@ -245,7 +263,7 @@ router.addHandler('LIST', async ({ page, request, log, crawler }) => {
   const cardSelector =
     '[data-ui="job-card"], [data-testid="job-card"], li[data-ui="job-card"], div[data-ui="job-card"]';
 
-  // Wait briefly for results
+  // Short wait for results
   await Promise.race([
     page.waitForSelector(cardSelector, { timeout: 12_000, state: 'attached' }),
     page.waitForSelector('a[href^="/view/"]', { timeout: 12_000, state: 'attached' }),
@@ -260,7 +278,8 @@ router.addHandler('LIST', async ({ page, request, log, crawler }) => {
 
   // Faster scroll loop
   let lastSeen = 0;
-  for (let i = 0; i < 18; i++) {
+  const maxIters = Math.min(18, Math.max(10, Math.ceil(resultsWanted / 3)));
+  for (let i = 0; i < maxIters; i++) {
     await page.evaluate(() => window.scrollBy(0, 800));
     await sleep(250 + Math.floor(Math.random() * 200));
     const [cardCount, linkCount] = await Promise.all([
@@ -303,6 +322,12 @@ router.addHandler('LIST', async ({ page, request, log, crawler }) => {
 router.addHandler('DETAIL', async ({ page, request, log }) => {
   // Fast nav
   await page.setViewportSize({ width: 1440, height: 900 });
+  await page.route('**/*', (route) => {
+    const url = route.request().url();
+    if (/\.(?:png|jpg|jpeg|gif|webp|ico|mp4|webm)(?:\?|$)/i.test(url)) return route.abort();
+    return route.continue();
+  });
+  await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
   await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 45_000 });
 
   // --- JSON-LD first ---
@@ -319,7 +344,6 @@ router.addHandler('DETAIL', async ({ page, request, log }) => {
       .first()
       .textContent()
       .catch(() => null)) ?? '';
-
   const company = extractCompanyFromLD(ld) ?? (companyDom ? companyDom.toString().trim() : null);
 
   const locDom =
@@ -330,13 +354,16 @@ router.addHandler('DETAIL', async ({ page, request, log }) => {
       .catch(() => null)) ?? '';
   const locationText = extractLocationFromLD(ld) ?? (locDom ? locDom.toString().trim() : null);
 
-  const employmentType = normalizeEmploymentType(ld?.employmentType ?? null) ?? (await guessEmploymentTypeFromDOM(page));
+  const employmentType =
+    normalizeEmploymentType(ld?.employmentType ?? null) ?? (await guessEmploymentTypeFromDOM(page));
 
   const ldDesc = (ld?.description ?? '') as string;
   const descriptionHtml =
     (/<\w+/.test(ldDesc) && ldDesc) ||
     (await getInnerHTMLDeep(page, ['[data-ui="job-description"]', '[data-ui="description"]', 'article'])) ||
-    `<p>${((await page.locator('article').first().textContent().catch(() => '')) ?? '').toString().trim()}</p>`;
+    `<p>${((await page.locator('article').first().textContent().catch(() => '')) ?? '')
+      .toString()
+      .trim()}</p>`;
 
   const item = {
     url: request.url,
@@ -349,7 +376,7 @@ router.addHandler('DETAIL', async ({ page, request, log }) => {
     externalId: (() => {
       const id = (ld as any)?.identifier;
       if (!id) return null;
-      if (Array.isArray(id)) return (id[0] && id[0].value) ? id[0].value as string : null;
+      if (Array.isArray(id)) return (id[0] && id[0].value) ? (id[0].value as string) : null;
       return (id.value ?? null) as string | null;
     })(),
     descriptionHtml,
@@ -360,41 +387,10 @@ router.addHandler('DETAIL', async ({ page, request, log }) => {
 });
 
 // -----------------------
-// Crawler
+// Crawler (Crawlee 3.15-compatible options only)
 // -----------------------
 const crawler = new PlaywrightCrawler({
   requestHandler: router,
-  // Set these once so we don't repeat overhead in handlers
-  prePageCreateHooks: [
-    async ({ pageOptions }) => {
-      // nothing here for now; could add context-level defaults if needed
-      return pageOptions;
-    },
-  ],
-  preNavigationHooks: [
-    async ({ page }) => {
-      // lightweight anti-bot setup without heavy CDP each time
-      await page.addInitScript(() => {
-        try {
-          Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-          Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-          Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] as any });
-          Object.defineProperty(Notification, 'permission', { get: () => 'denied' as any });
-        } catch {}
-      });
-      // block only heavy media once per page
-      await page.route('**/*', (route) => {
-        const url = route.request().url();
-        if (/\.(?:png|jpg|jpeg|gif|webp|ico|mp4|webm)(?:\?|$)/i.test(url)) return route.abort();
-        return route.continue();
-      });
-      // quick headers (no CDP)
-      await page.setExtraHTTPHeaders({
-        'Accept-Language': 'en-US,en;q=0.9',
-      });
-      await page.setViewportSize({ width: 1440, height: 900 });
-    },
-  ],
   launchContext: {
     launchOptions: {
       headless: true,
@@ -406,11 +402,12 @@ const crawler = new PlaywrightCrawler({
       ],
     },
   },
-  maxConcurrency: 6,                 // was 2
-  requestHandlerTimeoutSecs: 60,     // was 120
+  maxConcurrency: 6,             // increased parallelism
+  requestHandlerTimeoutSecs: 60, // shorter per-request cap
   maxRequestsPerCrawl: resultsWanted + 50,
-  failedRequestHandler: async ({ request, error }) => {
-    console.error(`Request failed: ${request.url}`, error?.message);
+  failedRequestHandler: async ({ request, error }: any) => {
+    const msg = error && typeof error === 'object' && 'message' in error ? String((error as any).message) : '';
+    console.error(`Request failed: ${request.url} ${msg ? `- ${msg}` : ''}`);
   },
 });
 
@@ -419,6 +416,5 @@ console.info(`Search URL: ${searchUrl}`);
 
 await crawler.run([{ url: searchUrl, label: 'LIST' }]);
 
-console.info(`Scraping completed. Requested ~${resultsWanted} details.`);
-
+console.info('Scraping completed.');
 await Actor.exit();
