@@ -1,4 +1,4 @@
-import { Actor, KeyValueStore } from 'apify';
+import { Actor, log, KeyValueStore } from 'apify';
 import { PlaywrightCrawler, Dataset, createPlaywrightRouter } from 'crawlee';
 import type { Page } from 'playwright';
 
@@ -14,9 +14,9 @@ await Actor.init();
 
 interface InputSchema {
   keyword: string;
-  location?: string;
+  location?: string; // optional slug like `united-states-of-america` or city slug
   postedDate?: '24h' | '7d' | '30d' | 'anytime';
-  resultsWanted?: number;
+  resultsWanted?: number; // number of detail pages to save
 }
 
 const input = (await Actor.getInput<InputSchema>()) ?? {
@@ -32,6 +32,7 @@ const resultsWanted = Math.max(1, Math.min(500, input.resultsWanted ?? 50));
 // -----------------------
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Traverse document + shadow roots + iframes to grab links to /view/
 async function collectViewLinksDeep(page: Page): Promise<string[]> {
   return await page.evaluate(() => {
     const out = new Set<string>();
@@ -319,7 +320,7 @@ router.addHandler('LIST', async ({ page, request, log, crawler }) => {
   log.info(`Enqueued ${enqueued} detail pages (total seen: ${seenUrls.size}).`);
 });
 
-router.addHandler('DETAIL', async ({ page, request, log }) => {
+router.addHandler('DETAIL', async ({ page, request }) => {
   // Fast nav
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.route('**/*', (route) => {
@@ -384,6 +385,8 @@ router.addHandler('DETAIL', async ({ page, request, log }) => {
   };
 
   await Dataset.pushData(item);
+  collected++;
+  log.info(`Saved job (${collected}/${resultsWanted}).`);
 });
 
 // -----------------------
@@ -412,9 +415,10 @@ const crawler = new PlaywrightCrawler({
 });
 
 const searchUrl = buildSearchUrl();
-console.info(`Search URL: ${searchUrl}`);
+log.info(`Search URL: ${searchUrl}`);
 
 await crawler.run([{ url: searchUrl, label: 'LIST' }]);
 
-console.info('Scraping completed.');
+log.info(`Scraping completed. Collected ${collected} job listing(s).`);
+
 await Actor.exit();
